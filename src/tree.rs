@@ -59,7 +59,7 @@ fn build_host_info(host: &HostEntry) -> Option<String> {
             .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or(identity);
-        result.push(':');
+        result.push('/');
         result.push_str(name);
     }
     if let Some(ref jump) = host.proxy_jump {

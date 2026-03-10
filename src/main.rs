@@ -243,6 +243,7 @@ fn main() -> Result<()> {
         while !app.should_quit {
             let theme = theme::theme_by_index(app.theme_index);
             terminal.draw(|f| ui::draw(f, &mut app, &theme))?;
+
             event::handle_events(&mut app)?;
         }
 

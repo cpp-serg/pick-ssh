@@ -405,6 +405,7 @@ impl App {
     fn sync_list_state(&mut self) {
         self.list_state.select(Some(self.selected));
     }
+
 }
 
 #[cfg(test)]
