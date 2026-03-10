@@ -4,6 +4,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::app::App;
+use crate::theme::THEMES;
 
 pub fn handle_events(app: &mut App) -> Result<()> {
     if !event::poll(Duration::from_millis(100))? {
@@ -30,6 +31,14 @@ pub fn handle_events(app: &mut App) -> Result<()> {
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.toggle_exact();
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
+                app.theme_index = (app.theme_index + 1) % THEMES.len();
+                app.theme_changed = true;
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::ALT) => {
+                app.theme_index = (app.theme_index + THEMES.len() - 1) % THEMES.len();
+                app.theme_changed = true;
             }
             KeyCode::Home => app.move_to_first(),
             KeyCode::End => app.move_to_last(),

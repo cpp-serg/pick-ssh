@@ -15,6 +15,7 @@ Browse, filter, and connect to your SSH hosts without remembering hostnames. pic
 - **History commands** — history entries display the full original command; Enter replays it, Tab prints without executing
 - **Shell integration** — embed as a Ctrl+S completion widget in zsh, bash, or fish
 - **Context-aware completion** — appends `:` for scp/rsync, detects partial words as filters, launches ssh on empty line
+- **20 color themes** — gruvbox, dracula, nord, catppuccin, solarized, tokyonight, onedark, monokai, zenburn, base16, rosé pine, kanagawa — selectable via `--theme`, env var, or cycled at runtime with Alt+e/Alt+r
 
 ## Installation
 
@@ -56,6 +57,25 @@ pick-ssh --complete --line "ssh pro"
 ```
 
 The `--line` flag analyzes the command line to determine the filter, output prefix, and suffix (`:` for scp/rsync). If the line contains a single word with no spaces, pick-ssh treats it as a filter and prepends `ssh` to the result.
+
+### Theme selection
+
+Choose a color theme:
+
+```bash
+pick-ssh --theme dracula
+```
+
+Or set via environment variable:
+
+```bash
+export PICK_SSH_CONFIG="theme=nord"
+pick-ssh
+```
+
+The `--theme` flag overrides the env var. Available themes: gruvbox-dark (default), gruvbox-light, dracula, nord, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, tokyonight, tokyonight-storm, onedark, monokai, zenburn, base16-default-dark, rose-pine, rose-pine-moon, rose-pine-dawn, kanagawa, kanagawa-dragon, kanagawa-lotus.
+
+You can also cycle through themes at runtime with **Alt+e** (previous) and **Alt+r** (next).
 
 ### Pre-filled filter
 
@@ -132,6 +152,8 @@ After reloading your shell, press **Ctrl+S** to open pick-ssh. The widget is con
 | PageDown | Move down one page |
 | Enter | Select host — for history entries, uses the full original command |
 | Tab | Print command without executing (standalone: prints to stdout; shell widget: places on command line) |
+| Alt+E | Previous theme |
+| Alt+R | Next theme |
 | Esc / Ctrl+C | Quit without selecting |
 
 ## How it works

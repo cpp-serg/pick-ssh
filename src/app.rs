@@ -16,6 +16,8 @@ pub struct App {
     pub chosen_full_cmd: Option<String>,
     /// Ctrl+Enter: print command instead of executing
     pub print_only: bool,
+    pub theme_index: usize,
+    pub theme_changed: bool,
 }
 
 /// Fuzzy match: checks if all pattern chars appear in text in order (not necessarily consecutive).
@@ -128,6 +130,8 @@ impl App {
             chosen_host: None,
             chosen_full_cmd: None,
             print_only: false,
+            theme_index: 0,
+            theme_changed: false,
         }
     }
 

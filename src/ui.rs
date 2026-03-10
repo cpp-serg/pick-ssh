@@ -1,21 +1,34 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
 use crate::app::App;
+use crate::theme::{Theme, theme_name_by_index};
 use crate::tree::FlatItemKind;
 
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(f.area());
 
     // Filter input
     let filter_text = format!("> {}", app.filter);
-    let filter =
-        Paragraph::new(filter_text).block(Block::default().borders(Borders::ALL).title("Filter"));
+    let title = if app.theme_changed {
+        theme_name_by_index(app.theme_index)
+    } else {
+        "Filter"
+    };
+    let filter = Paragraph::new(filter_text)
+        .style(Style::default().fg(theme.accent_filter).bg(theme.bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(theme.bg_hl))
+                .style(Style::default().bg(theme.bg)),
+        );
     f.render_widget(filter, chunks[0]);
 
     // Set cursor position after filter text
@@ -42,7 +55,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 match item.kind {
                     FlatItemKind::File => {
                         let style = Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme.accent_header)
                             .add_modifier(Modifier::BOLD);
                         ListItem::new(Line::from(Span::styled(
                             format!("{indent}{}", item.label),
@@ -50,18 +63,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                         )))
                     }
                     FlatItemKind::Host => {
-                        let bg = Color::Rgb(60, 60, 60);
                         let style = if is_selected {
                             Style::default()
-                                .fg(Color::Rgb(255, 255, 255))
-                                .bg(bg)
+                                .fg(theme.fg_bright)
+                                .bg(theme.bg_hl)
                                 .add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::Gray)
+                            Style::default().fg(theme.fg)
                         };
 
-                        let prefix = if is_selected { "▸ " } else { "  " };
-                        let main_text = format!("{indent}{prefix}{}", item.label);
+                        let prefix = if is_selected {
+                            Span::styled("▸ ", Style::default().fg(theme.accent_marker).bg(theme.bg_hl).add_modifier(Modifier::BOLD))
+                        } else {
+                            Span::raw("  ")
+                        };
+                        let prefix_width = 2;
+                        let label_text = format!("{indent}{}", item.label);
+                        let visual_width = label_text.chars().count() + prefix_width;
 
                         // Show full_cmd (history, >2 args) at col 30, or info (config) at col 40
                         let show_cmd = item.full_cmd.as_ref().filter(|cmd| {
@@ -75,20 +93,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                             (None, 0)
                         };
                         if let Some(hint) = hint {
-                            let pad = col.saturating_sub(main_text.chars().count());
-                            let mut hint_style = Style::default().fg(Color::DarkGray);
+                            let pad = col.saturating_sub(visual_width);
+                            let mut hint_style = Style::default().fg(theme.fg_dim);
                             let mut pad_style = Style::default();
                             if is_selected {
-                                hint_style = Style::default().fg(Color::Gray).bg(bg);
-                                pad_style = pad_style.bg(bg);
+                                hint_style = Style::default().fg(theme.accent_info).bg(theme.bg_hl);
+                                pad_style = pad_style.bg(theme.bg_hl);
                             }
                             ListItem::new(Line::from(vec![
-                                Span::styled(main_text, style),
+                                prefix,
+                                Span::styled(label_text, style),
                                 Span::styled(" ".repeat(pad), pad_style),
                                 Span::styled(hint, hint_style),
                             ]))
                         } else {
-                            ListItem::new(Line::from(Span::styled(main_text, style)))
+                            ListItem::new(Line::from(vec![
+                                prefix,
+                                Span::styled(label_text, style),
+                            ]))
                         }
                     }
                 }
@@ -96,6 +118,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .collect()
     };
 
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("SSH Hosts"));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("SSH Hosts")
+            .border_style(Style::default().fg(theme.bg_hl))
+            .style(Style::default().bg(theme.bg)),
+    );
     f.render_stateful_widget(list, chunks[1], &mut app.list_state);
 }

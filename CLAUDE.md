@@ -26,7 +26,8 @@ src/
 ├── app.rs          — App state: filter, selection, visible list, navigation, fuzzy match
 ├── ui.rs           — ratatui rendering: filter bar + scrollable tree list
 ├── event.rs        — crossterm keyboard event handling
-└── history.rs      — parse ~/.zsh_history for ssh/sftp/scp/rsync hosts (with full command)
+├── history.rs      — parse ~/.zsh_history for ssh/sftp/scp/rsync hosts (with full command)
+└── theme.rs        — Theme struct, 20 built-in color palettes, theme resolution
 ```
 
 ### Data flow
@@ -43,6 +44,7 @@ src/
 - `--filter <value>` — pre-fill filter field; auto-selects if single unique match
 - `--line <buffer>` — shell integration: pass current command line for context-aware completion (supersedes `--filter`)
 - `--embed <shell>` — print shell integration snippet (zsh/bash/fish) and exit
+- `--theme <name>` — color theme (overrides `PICK_SSH_CONFIG` env var)
 
 ### Key design decisions
 
@@ -54,6 +56,15 @@ src/
 - Selected host uses SSH config entry name (alias), not resolved hostname
 - Root config header shows `"config"`; child configs show parent dir name or filename
 - Glob includes sorted alphabetically; explicit includes preserve declaration order
+
+### Themes
+
+- 20 built-in themes: gruvbox-dark (default), gruvbox-light, dracula, nord, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, tokyonight, tokyonight-storm, onedark, monokai, zenburn, base16-default-dark, rose-pine, rose-pine-moon, rose-pine-dawn, kanagawa, kanagawa-dragon, kanagawa-lotus
+- Theme struct has 9 semantic color slots: `bg`, `bg_hl`, `fg`, `fg_dim`, `fg_bright`, `accent_filter`, `accent_marker`, `accent_header`, `accent_info`
+- Resolution order: `--theme` CLI flag > `PICK_SSH_CONFIG` env var > default (gruvbox-dark)
+- `PICK_SSH_CONFIG` format: comma-separated key=value pairs (e.g., `PICK_SSH_CONFIG="theme=nord"`)
+- Aliases: "gruvbox" → gruvbox-dark, "catppuccin" → catppuccin-mocha, "solarized" → solarized-dark, "base16" → base16-default-dark, "rosepine" → rose-pine
+- Alt+e/Alt+r cycle themes at runtime (previous/next); theme name shown in filter title while cycling
 
 ### Navigation
 

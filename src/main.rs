@@ -2,6 +2,7 @@ mod app;
 mod event;
 mod history;
 mod ssh_config;
+mod theme;
 mod tree;
 mod ui;
 
@@ -38,6 +39,10 @@ struct Cli {
     /// Print shell integration snippet and exit. Supported shells: zsh, bash, fish
     #[arg(long, value_name = "SHELL")]
     embed: Option<Option<String>>,
+
+    /// Color theme. Overrides PICK_SSH_CONFIG env var.
+    #[arg(long, value_name = "THEME", value_parser = clap::builder::PossibleValuesParser::new(theme::THEME_NAMES))]
+    theme: Option<String>,
 }
 
 /// Context derived from --line or legacy --filter/--cmd flags.
@@ -204,9 +209,12 @@ fn main() -> Result<()> {
         }
     };
 
+    let (_, theme_index) = theme::resolve_theme(cli.theme.as_deref());
+
     let root = load_ssh_config()?;
     let hist = history::load_history();
     let mut app = App::new(root, hist);
+    app.theme_index = theme_index;
 
     // Apply initial filter
     if let Some(ref f) = ctx.filter {
@@ -233,7 +241,8 @@ fn main() -> Result<()> {
 
         // Main loop
         while !app.should_quit {
-            terminal.draw(|f| ui::draw(f, &mut app))?;
+            let theme = theme::theme_by_index(app.theme_index);
+            terminal.draw(|f| ui::draw(f, &mut app, &theme))?;
             event::handle_events(&mut app)?;
         }
 
