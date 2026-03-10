@@ -75,6 +75,7 @@ impl App {
                 depth: 0,
                 connect_host: None,
                 full_cmd: None,
+                info: None,
             });
             for entry in &history[..recent_count] {
                 all_items.push(FlatItem {
@@ -83,6 +84,7 @@ impl App {
                     depth: 1,
                     connect_host: Some(entry.host.clone()),
                     full_cmd: Some(entry.full_cmd.clone()),
+                    info: None,
                 });
             }
         }
@@ -98,6 +100,7 @@ impl App {
                 depth: 0,
                 connect_host: None,
                 full_cmd: None,
+                info: None,
             });
             for entry in &history[recent_count..] {
                 all_items.push(FlatItem {
@@ -106,6 +109,7 @@ impl App {
                     depth: 1,
                     connect_host: Some(entry.host.clone()),
                     full_cmd: Some(entry.full_cmd.clone()),
+                    info: None,
                 });
             }
         }

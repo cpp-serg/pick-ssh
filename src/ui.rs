@@ -50,28 +50,42 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                         )))
                     }
                     FlatItemKind::Host => {
+                        let bg = Color::Rgb(60, 60, 60);
                         let style = if is_selected {
                             Style::default()
-                                .fg(Color::Green)
+                                .fg(Color::Rgb(255, 255, 255))
+                                .bg(bg)
                                 .add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::White)
+                            Style::default().fg(Color::Gray)
                         };
 
                         let prefix = if is_selected { "▸ " } else { "  " };
                         let main_text = format!("{indent}{prefix}{}", item.label);
 
+                        // Show full_cmd (history, >2 args) at col 30, or info (config) at col 40
                         let show_cmd = item.full_cmd.as_ref().filter(|cmd| {
-                            // Hide if it's just "ssh [user@]host" with no extra args
                             cmd.split_whitespace().count() > 2
                         });
-                        if let Some(cmd) = show_cmd {
-                            let pad = 30usize.saturating_sub(main_text.chars().count());
-                            let cmd_style = Style::default().fg(Color::DarkGray);
+                        let (hint, col): (Option<String>, usize) = if let Some(cmd) = show_cmd {
+                            (Some(cmd.clone()), 30)
+                        } else if let Some(ref info) = item.info {
+                            (Some(info.clone()), 40)
+                        } else {
+                            (None, 0)
+                        };
+                        if let Some(hint) = hint {
+                            let pad = col.saturating_sub(main_text.chars().count());
+                            let mut hint_style = Style::default().fg(Color::DarkGray);
+                            let mut pad_style = Style::default();
+                            if is_selected {
+                                hint_style = Style::default().fg(Color::Gray).bg(bg);
+                                pad_style = pad_style.bg(bg);
+                            }
                             ListItem::new(Line::from(vec![
                                 Span::styled(main_text, style),
-                                Span::raw(" ".repeat(pad)),
-                                Span::styled(cmd.clone(), cmd_style),
+                                Span::styled(" ".repeat(pad), pad_style),
+                                Span::styled(hint, hint_style),
                             ]))
                         } else {
                             ListItem::new(Line::from(Span::styled(main_text, style)))

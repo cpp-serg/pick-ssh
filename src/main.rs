@@ -253,8 +253,8 @@ fn main() -> Result<()> {
 
         if cli.complete {
             let output = if app.print_only {
-                // Tab in completion mode: output the full command
-                full.clone()
+                // Tab in completion mode: insert host into command line context (no history args)
+                format!("{}{host}{}", ctx.output_prefix, ctx.output_suffix)
             } else if app.chosen_full_cmd.is_some() && ctx.output_prefix == "ssh " {
                 // Enter in ssh-launch mode: prefer the full history command
                 full.clone()
@@ -267,8 +267,8 @@ fn main() -> Result<()> {
                 print!("{output}");
             }
         } else if app.print_only {
-            // Ctrl+Enter in standalone mode: print command, don't exec
-            println!("{full}");
+            // Tab in standalone mode: print simple ssh command
+            println!("ssh {host}");
         } else {
             // Enter in standalone mode: exec the command
             eprintln!("{full}");

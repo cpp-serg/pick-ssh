@@ -39,6 +39,16 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 app.select_print_only();
             }
             KeyCode::Enter => app.select(),
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.filter.clear();
+                app.update_filter();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let trimmed = app.filter.trim_end_matches(|c: char| !c.is_whitespace());
+                let trimmed = trimmed.trim_end();
+                app.filter = trimmed.to_string();
+                app.update_filter();
+            }
             KeyCode::Backspace => {
                 app.filter.pop();
                 app.update_filter();

@@ -60,6 +60,8 @@ pub fn parse_config(path: &Path) -> Result<ConfigNode> {
                     hostname: None,
                     user: None,
                     port: None,
+                    identity_file: None,
+                    proxy_jump: None,
                 });
             }
             "hostname" => {
@@ -75,6 +77,16 @@ pub fn parse_config(path: &Path) -> Result<ConfigNode> {
             "port" => {
                 if let Some(ref mut h) = current_host {
                     h.port = value.parse().ok();
+                }
+            }
+            "identityfile" => {
+                if let Some(ref mut h) = current_host {
+                    h.identity_file = Some(value);
+                }
+            }
+            "proxyjump" => {
+                if let Some(ref mut h) = current_host {
+                    h.proxy_jump = Some(value);
                 }
             }
             "include" => {
