@@ -66,7 +66,11 @@ fn build_host_info(host: &HostEntry) -> Option<String> {
         result.push(':');
         result.push_str(jump);
     }
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 impl ConfigNode {

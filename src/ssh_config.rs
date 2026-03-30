@@ -55,8 +55,7 @@ fn parse_config(path: &Path) -> Result<(ConfigNode, Vec<HostEntry>)> {
                         hosts.push(h);
                     }
                 }
-                let is_wildcard =
-                    value.contains('*') || value.contains('?') || value.contains('!');
+                let is_wildcard = value.contains('*') || value.contains('?') || value.contains('!');
                 // Skip internal entries starting with _
                 if !is_wildcard && value.starts_with('_') {
                     continue;

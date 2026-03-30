@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
 use crate::app::App;
@@ -15,7 +15,9 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
 
     // Filter input
     let filter_text = format!("> {}", app.filter);
-    let title = if app.theme_changed {
+    let title = if app.confirm_clear_pins {
+        "Clear all pins? Press Ctrl+Shift+P to confirm"
+    } else if app.theme_changed {
         theme_name_by_index(app.theme_index)
     } else {
         "Filter"
@@ -37,8 +39,10 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
         chunks[0].y + 1,
     ));
 
-    // Update page size from actual viewport height (minus borders)
+    // Update page size and list area position from actual viewport (minus borders)
     app.page_size = (chunks[1].height as usize).saturating_sub(2);
+    app.list_area_y = chunks[1].y + 1;
+    app.list_area_height = chunks[1].height.saturating_sub(2);
 
     // Build list items in a block so the immutable borrow is dropped before render_stateful_widget
     let items: Vec<ListItem> = {
@@ -73,7 +77,13 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
                         };
 
                         let prefix = if is_selected {
-                            Span::styled("▸ ", Style::default().fg(theme.accent_marker).bg(theme.bg_hl).add_modifier(Modifier::BOLD))
+                            Span::styled(
+                                "▸ ",
+                                Style::default()
+                                    .fg(theme.accent_marker)
+                                    .bg(theme.bg_hl)
+                                    .add_modifier(Modifier::BOLD),
+                            )
                         } else {
                             Span::raw("  ")
                         };
@@ -82,9 +92,10 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
                         let visual_width = label_text.chars().count() + prefix_width;
 
                         // Show full_cmd (history, >2 args) at col 30, or info (config) at col 40
-                        let show_cmd = item.full_cmd.as_ref().filter(|cmd| {
-                            cmd.split_whitespace().count() > 2
-                        });
+                        let show_cmd = item
+                            .full_cmd
+                            .as_ref()
+                            .filter(|cmd| cmd.split_whitespace().count() > 2);
                         let (hint, col): (Option<String>, usize) = if let Some(cmd) = show_cmd {
                             (Some(cmd.clone()), 30)
                         } else if let Some(ref info) = item.info {
@@ -107,10 +118,7 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
                                 Span::styled(hint, hint_style),
                             ]))
                         } else {
-                            ListItem::new(Line::from(vec![
-                                prefix,
-                                Span::styled(label_text, style),
-                            ]))
+                            ListItem::new(Line::from(vec![prefix, Span::styled(label_text, style)]))
                         }
                     }
                 }
@@ -126,4 +134,165 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             .style(Style::default().bg(theme.bg)),
     );
     f.render_stateful_widget(list, chunks[1], &mut app.list_state);
+
+    // Help popup
+    if app.show_help {
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "Up/Down  ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Navigate"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+j/k ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Navigate"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Home/End ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Jump to first/last"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "PgUp/Dn  ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Page up/down"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Tab      ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Select (run command)"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Enter    ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Select (print only)"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+f   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Toggle fuzzy/exact"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+u   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Clear filter"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+w   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Delete last word"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+p   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Pin/unpin entry"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+P   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Clear all pins"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Alt+j/k  ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Move pin down/up"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Alt+r/e  ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Next/prev theme"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "F1       ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("This help"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Esc      ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Quit"),
+            ]),
+        ];
+        let popup_height = lines.len() as u16 + 2; // +2 for borders
+        let popup_width = 38;
+        let area = f.area();
+        let popup_area = Rect {
+            x: area.width.saturating_sub(popup_width) / 2,
+            y: area.height.saturating_sub(popup_height) / 2,
+            width: popup_width.min(area.width),
+            height: popup_height.min(area.height),
+        };
+        f.render_widget(Clear, popup_area);
+        let help = Paragraph::new(lines)
+            .style(Style::default().fg(theme.fg).bg(theme.bg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Keyboard Shortcuts")
+                    .border_style(Style::default().fg(theme.accent_header))
+                    .style(Style::default().bg(theme.bg)),
+            );
+        f.render_widget(help, popup_area);
+    }
 }

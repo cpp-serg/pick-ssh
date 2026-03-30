@@ -253,7 +253,7 @@ pub const KANAGAWA_LOTUS: Theme = Theme {
     accent_info: Color::Rgb(99, 123, 184),
 };
 
-pub const THEMES: &[(& str, Theme)] = &[
+pub const THEMES: &[(&str, Theme)] = &[
     ("gruvbox-dark", GRUVBOX_DARK),
     ("gruvbox-light", GRUVBOX_LIGHT),
     ("dracula", DRACULA),
@@ -323,12 +323,13 @@ pub fn theme_from_env() -> Option<String> {
     None
 }
 
-/// Resolve theme: CLI flag > env var > default (gruvbox-dark).
+/// Resolve theme: CLI flag > config file > env var > default (gruvbox-dark).
 /// Warns on stderr for unknown theme names.
 /// Returns (Theme, index into THEMES).
-pub fn resolve_theme(cli_theme: Option<&str>) -> (Theme, usize) {
+pub fn resolve_theme(cli_theme: Option<&str>, config_theme: Option<&str>) -> (Theme, usize) {
     let name = cli_theme
         .map(String::from)
+        .or_else(|| config_theme.map(String::from))
         .or_else(theme_from_env);
 
     match name {

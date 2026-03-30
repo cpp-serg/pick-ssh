@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod history;
+mod pinned;
 mod ssh_config;
 mod theme;
 mod tree;
@@ -13,6 +14,7 @@ use std::process::Command;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -209,11 +211,12 @@ fn main() -> Result<()> {
         }
     };
 
-    let (_, theme_index) = theme::resolve_theme(cli.theme.as_deref());
+    let cfg = pinned::load_config();
+    let (_, theme_index) = theme::resolve_theme(cli.theme.as_deref(), cfg.theme.as_deref());
 
     let root = load_ssh_config()?;
     let hist = history::load_history();
-    let mut app = App::new(root, hist);
+    let mut app = App::new(root, hist, cfg.pinned);
     app.theme_index = theme_index;
 
     // Apply initial filter
@@ -235,7 +238,7 @@ fn main() -> Result<()> {
         // Setup terminal — use stderr so stdout stays clean for --complete mode
         enable_raw_mode()?;
         let mut stderr = io::stderr();
-        execute!(stderr, EnterAlternateScreen)?;
+        execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stderr);
         let mut terminal = Terminal::new(backend)?;
 
@@ -249,7 +252,11 @@ fn main() -> Result<()> {
 
         // Restore terminal
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
     }
 
     // Act on selection

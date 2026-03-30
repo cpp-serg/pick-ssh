@@ -75,8 +75,8 @@ src/
 
 ### Selection behavior
 
-- **Enter** — select host; for history entries, uses the full original command (e.g., `ssh aaa -t zsh`)
-- **Tab** — print command instead of executing: standalone prints to stdout; completion mode outputs `print:` prefixed result so shell places it on command line without executing
+- **Tab** — select host; for history entries, uses the full original command (e.g., `ssh aaa -t zsh`)
+- **Enter** — print command instead of executing: standalone prints to stdout; completion mode outputs `print:` prefixed result so shell places it on command line without executing
 - In ssh-launch mode (standalone / empty line / single word), Enter on a history entry runs the full original command
 - In completion mode (`scp`, `rsync`, etc.), full_cmd is not used — only the hostname is inserted
 
