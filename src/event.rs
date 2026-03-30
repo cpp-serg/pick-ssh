@@ -26,6 +26,27 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // SSH test popup: scrollable, dismiss on Esc only
+            if app.show_ssh_test {
+                match key.code {
+                    KeyCode::Esc => app.show_ssh_test = false,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.ssh_test_scroll = app.ssh_test_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.ssh_test_scroll = app.ssh_test_scroll.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        app.ssh_test_scroll = app.ssh_test_scroll.saturating_sub(10);
+                    }
+                    KeyCode::PageDown => {
+                        app.ssh_test_scroll = app.ssh_test_scroll.saturating_add(10);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
             // Dismiss "clear all pins?" on any key except the confirming Ctrl+Shift+P
             if app.confirm_clear_pins {
                 let is_confirm = key.code == KeyCode::Char('p')
@@ -80,6 +101,9 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                         app.toggle_pin();
                     }
                 }
+                KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.start_ssh_test();
+                }
                 KeyCode::F(1) => {
                     app.show_help = true;
                 }
@@ -112,14 +136,33 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 _ => {}
             }
         }
-        Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => app.move_up(),
-            MouseEventKind::ScrollDown => app.move_down(),
-            MouseEventKind::Down(MouseButton::Left) => {
-                app.click_select(mouse.row);
+        Event::Mouse(mouse) => {
+            if app.show_help {
+                // Any mouse action dismisses help
+                if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                    app.show_help = false;
+                }
+            } else if app.show_ssh_test {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        app.ssh_test_scroll = app.ssh_test_scroll.saturating_sub(3);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.ssh_test_scroll = app.ssh_test_scroll.saturating_add(3);
+                    }
+                    _ => {}
+                }
+            } else {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => app.move_up(),
+                    MouseEventKind::ScrollDown => app.move_down(),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        app.click_select(mouse.row);
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
-        },
+        }
         _ => {}
     }
 

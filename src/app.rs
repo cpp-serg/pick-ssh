@@ -1,8 +1,16 @@
+use std::sync::mpsc;
+
 use ratatui::widgets::ListState;
 
 use crate::history::HistoryEntry;
 use crate::pinned;
 use crate::tree::{ConfigNode, FlatItem, FlatItemKind};
+
+pub enum SshTestMsg {
+    Line(String, String), // (content, timestamp "ss:ms")
+    Done(Option<i32>, String), // (exit code, timestamp)
+    Error(String),
+}
 
 pub struct App {
     all_items: Vec<FlatItem>,
@@ -29,6 +37,20 @@ pub struct App {
     pub confirm_clear_pins: bool,
     /// Whether to show the help popup
     pub show_help: bool,
+    /// Whether to show the SSH test result popup
+    pub show_ssh_test: bool,
+    /// Host being tested
+    pub ssh_test_host: String,
+    /// Lines of SSH test output for the popup
+    pub ssh_test_output: Vec<String>,
+    /// Vertical scroll offset for SSH test popup
+    pub ssh_test_scroll: u16,
+    /// None = not running, Some(true) = success, Some(false) = failure
+    pub ssh_test_result: Option<bool>,
+    /// Timestamp when the SSH test completed
+    pub ssh_test_done_ts: Option<String>,
+    /// Channel receiver for streaming SSH test output
+    pub ssh_test_rx: Option<mpsc::Receiver<SshTestMsg>>,
 }
 
 /// Fuzzy match: checks if all pattern chars appear in text in order (not necessarily consecutive).
@@ -171,6 +193,13 @@ impl App {
             pinned,
             confirm_clear_pins: false,
             show_help: false,
+            show_ssh_test: false,
+            ssh_test_host: String::new(),
+            ssh_test_output: Vec::new(),
+            ssh_test_scroll: 0,
+            ssh_test_result: None,
+            ssh_test_done_ts: None,
+            ssh_test_rx: None,
         }
     }
 
@@ -554,6 +583,119 @@ impl App {
         pinned::save_pinned(&self.pinned);
         self.rebuild_items();
         self.confirm_clear_pins = false;
+    }
+
+    /// Start SSH connectivity test: spawn process, stream output via channel.
+    pub fn start_ssh_test(&mut self) {
+        let Some(item) = self.selected_visible_item() else {
+            return;
+        };
+        if !matches!(item.kind, FlatItemKind::Host) {
+            return;
+        }
+        let Some(host) = item.connect_host.clone() else {
+            return;
+        };
+
+        self.ssh_test_host = host.clone();
+        self.ssh_test_output = Vec::new();
+        self.ssh_test_scroll = 0;
+        self.ssh_test_result = None;
+        self.ssh_test_done_ts = None;
+        self.show_ssh_test = true;
+
+        let (tx, rx) = mpsc::channel();
+        self.ssh_test_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            use std::time::Instant;
+
+            let start = Instant::now();
+            let ts = || {
+                let d = start.elapsed();
+                let secs = d.as_secs();
+                let ms = d.subsec_millis();
+                format!("{secs:02}:{ms:03}")
+            };
+
+            let child = std::process::Command::new("ssh")
+                .args([
+                    "-v",
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "BatchMode=yes",
+                    &host,
+                    "echo",
+                    "ok",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+
+            let mut child = match child {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(SshTestMsg::Error(format!("Failed to run ssh: {e}")));
+                    return;
+                }
+            };
+
+            let stderr = child.stderr.take().unwrap();
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => {
+                        if tx.send(SshTestMsg::Line(l, ts())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let status = child.wait();
+            let code = status.ok().and_then(|s| s.code());
+            let _ = tx.send(SshTestMsg::Done(code, ts()));
+        });
+    }
+
+    /// Poll the SSH test channel for new output lines. Returns true if test is still active.
+    pub fn poll_ssh_test(&mut self) -> bool {
+        let Some(ref rx) = self.ssh_test_rx else {
+            return false;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(SshTestMsg::Line(line, ts)) => {
+                    self.ssh_test_output.push(format!("{ts}  {line}"));
+                    // Auto-scroll to bottom while test is running
+                    self.ssh_test_scroll = u16::MAX;
+                }
+                Ok(SshTestMsg::Done(code, ts)) => {
+                    self.ssh_test_done_ts = Some(ts);
+                    let success = code == Some(0);
+                    self.ssh_test_result = Some(success);
+                    self.ssh_test_scroll = u16::MAX;
+                    self.ssh_test_rx = None;
+                    return false;
+                }
+                Ok(SshTestMsg::Error(msg)) => {
+                    self.ssh_test_output.push(msg);
+                    self.ssh_test_result = Some(false);
+                    self.ssh_test_scroll = u16::MAX;
+                    self.ssh_test_rx = None;
+                    return false;
+                }
+                Err(mpsc::TryRecvError::Empty) => return true,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.ssh_test_result = Some(false);
+                    self.ssh_test_rx = None;
+                    return false;
+                }
+            }
+        }
     }
 
     /// Rebuild all_items and reapply filter after pinned list changes.

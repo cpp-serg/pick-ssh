@@ -247,6 +247,9 @@ fn main() -> Result<()> {
             let theme = theme::theme_by_index(app.theme_index);
             terminal.draw(|f| ui::draw(f, &mut app, &theme))?;
 
+            // Poll streaming SSH test output
+            app.poll_ssh_test();
+
             event::handle_events(&mut app)?;
         }
 
