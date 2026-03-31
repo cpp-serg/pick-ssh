@@ -54,6 +54,8 @@ struct CompletionCtx {
     output_prefix: String,
     /// Text to append after the hostname in output (e.g. ":" for scp/rsync)
     output_suffix: &'static str,
+    /// The command at the start of the line (e.g. "ssh", "scp", "vim")
+    cmd: String,
 }
 
 fn parse_line(line: &str) -> CompletionCtx {
@@ -62,11 +64,13 @@ fn parse_line(line: &str) -> CompletionCtx {
             filter: None,
             output_prefix: "ssh ".to_string(),
             output_suffix: "",
+            cmd: String::new(),
         };
     }
 
     let cmd = line.split_whitespace().next().unwrap_or("");
-    let suffix = match cmd {
+    let cmd_base = cmd.rsplit('/').next().unwrap_or(cmd);
+    let suffix = match cmd_base {
         "scp" | "rsync" => ":",
         _ => "",
     };
@@ -76,6 +80,7 @@ fn parse_line(line: &str) -> CompletionCtx {
             filter: None,
             output_prefix: line.to_string(),
             output_suffix: suffix,
+            cmd: cmd_base.to_string(),
         }
     } else {
         match line.rfind(' ') {
@@ -83,12 +88,14 @@ fn parse_line(line: &str) -> CompletionCtx {
                 filter: Some(line[pos + 1..].to_string()),
                 output_prefix: line[..pos + 1].to_string(),
                 output_suffix: suffix,
+                cmd: cmd_base.to_string(),
             },
             // Single word, no spaces — treat like empty line (run ssh) but with filter
             None => CompletionCtx {
                 filter: Some(line.to_string()),
                 output_prefix: "ssh ".to_string(),
                 output_suffix: "",
+                cmd: String::new(),
             },
         }
     }
@@ -208,6 +215,7 @@ fn main() -> Result<()> {
             filter: cli.filter.clone(),
             output_prefix: String::new(),
             output_suffix: "",
+            cmd: String::new(),
         }
     };
 
@@ -290,17 +298,30 @@ fn main() -> Result<()> {
         )?;
     }
 
-    // SFTP path completion: output host:path directly
+    // SFTP path completion: output result
     if let Some(ref sftp_path) = app.sftp_chosen_path {
+        let is_vim = matches!(ctx.cmd.as_str(), "vim" | "nvim" | "vi" | "view" | "vimdiff");
         if cli.complete {
-            let output = format!("{}{sftp_path}", ctx.output_prefix);
-            if app.print_only {
-                print!("print:{output}");
+            let output = if is_vim {
+                // vim netrw: scp://host/relative or scp://host//absolute
+                let (host, path) = sftp_path.split_once(':').unwrap_or((sftp_path, ""));
+                let clean_path = path.strip_prefix("./").unwrap_or(path);
+                if clean_path.starts_with('/') {
+                    // Absolute: scp://host//etc/foo
+                    format!("{}scp://{host}/{clean_path}", ctx.output_prefix)
+                } else {
+                    // Relative: scp://host/foo/bar
+                    format!("{}scp://{host}/{clean_path}", ctx.output_prefix)
+                }
+            } else if ctx.output_prefix.is_empty() || ctx.output_prefix == "ssh " {
+                format!("scp {sftp_path}")
             } else {
-                print!("{output}");
-            }
+                format!("{}{sftp_path}", ctx.output_prefix)
+            };
+            print!("print:{output}");
         } else {
-            println!("{sftp_path}");
+            // Standalone mode: print scp command for user
+            println!("scp {sftp_path}");
         }
         return Ok(());
     }
