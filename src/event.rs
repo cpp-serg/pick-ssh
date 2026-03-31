@@ -47,6 +47,64 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // SFTP path completion popup
+            if app.show_sftp {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.show_sftp = false;
+                        app.sftp_chosen_path = None;
+                    }
+                    KeyCode::Up => {
+                        if app.sftp_selected > 0 {
+                            app.sftp_selected -= 1;
+                            app.sftp_list_state.select(Some(app.sftp_selected));
+                        }
+                    }
+                    KeyCode::Down => {
+                        if app.sftp_selected + 1 < app.sftp_filtered.len() {
+                            app.sftp_selected += 1;
+                            app.sftp_list_state.select(Some(app.sftp_selected));
+                        }
+                    }
+                    KeyCode::Enter => app.sftp_accept_selected(),
+                    KeyCode::Tab => {
+                        // Accept current path as-is
+                        app.sftp_chosen_path =
+                            Some(format!("{}:{}", app.sftp_host, app.sftp_path_input));
+                        app.show_sftp = false;
+                        app.should_quit = true;
+                    }
+                    KeyCode::Backspace => {
+                        if !app.sftp_path_input.is_empty() {
+                            app.sftp_path_input.pop();
+                            app.sftp_on_input_changed();
+                        }
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.sftp_path_input.clear();
+                        app.sftp_on_input_changed();
+                    }
+                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Delete back to previous /
+                        let len = app.sftp_path_input.len().saturating_sub(1);
+                        if let Some(pos) = app.sftp_path_input[..len].rfind('/') {
+                            app.sftp_path_input.truncate(pos + 1);
+                            app.sftp_on_input_changed();
+                        }
+                    }
+                    KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.sftp_show_hidden = !app.sftp_show_hidden;
+                        app.sftp_update_filter();
+                    }
+                    KeyCode::Char(c) => {
+                        app.sftp_path_input.push(c);
+                        app.sftp_on_input_changed();
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
             // Dismiss "clear all pins?" on any key except the confirming Ctrl+Shift+P
             if app.confirm_clear_pins {
                 let is_confirm = key.code == KeyCode::Char('p')
@@ -104,6 +162,16 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.start_ssh_test();
                 }
+                KeyCode::Null
+                | KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.start_sftp_completion();
+                }
+                KeyCode::Char('\0') => {
+                    app.start_sftp_completion();
+                }
+                KeyCode::F(2) => {
+                    app.start_sftp_completion();
+                }
                 KeyCode::F(1) => {
                     app.show_help = true;
                 }
@@ -139,8 +207,27 @@ pub fn handle_events(app: &mut App) -> Result<()> {
         Event::Mouse(mouse) => {
             if app.show_help {
                 // Any mouse action dismisses help
-                if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
                     app.show_help = false;
+                }
+            } else if app.show_sftp {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        if app.sftp_selected > 0 {
+                            app.sftp_selected -= 1;
+                            app.sftp_list_state.select(Some(app.sftp_selected));
+                        }
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if app.sftp_selected + 1 < app.sftp_filtered.len() {
+                            app.sftp_selected += 1;
+                            app.sftp_list_state.select(Some(app.sftp_selected));
+                        }
+                    }
+                    _ => {}
                 }
             } else if app.show_ssh_test {
                 match mouse.kind {

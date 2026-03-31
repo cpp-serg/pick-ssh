@@ -219,18 +219,45 @@ fn main() -> Result<()> {
     let mut app = App::new(root, hist, cfg.pinned);
     app.theme_index = theme_index;
 
-    // Apply initial filter
-    if let Some(ref f) = ctx.filter {
-        app.filter.clone_from(f);
-        app.update_filter();
-        app.snap_to_first_host();
-
-        // Single result → auto-select immediately
-        if app.visible_host_count() == 1 {
-            app.select();
+    // Check if filter looks like host:path — jump straight to SFTP completion
+    let sftp_direct = ctx.filter.as_ref().and_then(|f| {
+        let colon = f.find(':')?;
+        if colon == 0 {
+            return None;
         }
-    } else {
+        let host = f[..colon].to_string();
+        let path = f[colon + 1..].to_string();
+        Some((host, path))
+    });
+
+    if let Some((host, path)) = sftp_direct {
+        app.sftp_host = host;
+        app.sftp_path_input = if path.is_empty() {
+            "./".to_string()
+        } else {
+            path
+        };
+        app.show_sftp = true;
+        let dir_part = match app.sftp_path_input.rfind('/') {
+            Some(pos) => app.sftp_path_input[..=pos].to_string(),
+            None => "./".to_string(),
+        };
+        app.sftp_request_listing(&dir_part);
         app.snap_to_first_host();
+    } else {
+        // Apply initial filter
+        if let Some(ref f) = ctx.filter {
+            app.filter.clone_from(f);
+            app.update_filter();
+            app.snap_to_first_host();
+
+            // Single result → auto-select immediately
+            if app.visible_host_count() == 1 {
+                app.select();
+            }
+        } else {
+            app.snap_to_first_host();
+        }
     }
 
     // Skip TUI if already auto-selected
@@ -247,8 +274,9 @@ fn main() -> Result<()> {
             let theme = theme::theme_by_index(app.theme_index);
             terminal.draw(|f| ui::draw(f, &mut app, &theme))?;
 
-            // Poll streaming SSH test output
+            // Poll async operations
             app.poll_ssh_test();
+            app.poll_sftp();
 
             event::handle_events(&mut app)?;
         }
@@ -260,6 +288,21 @@ fn main() -> Result<()> {
             LeaveAlternateScreen,
             DisableMouseCapture
         )?;
+    }
+
+    // SFTP path completion: output host:path directly
+    if let Some(ref sftp_path) = app.sftp_chosen_path {
+        if cli.complete {
+            let output = format!("{}{sftp_path}", ctx.output_prefix);
+            if app.print_only {
+                print!("print:{output}");
+            } else {
+                print!("{output}");
+            }
+        } else {
+            println!("{sftp_path}");
+        }
+        return Ok(());
     }
 
     // Act on selection

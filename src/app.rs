@@ -7,8 +7,25 @@ use crate::pinned;
 use crate::tree::{ConfigNode, FlatItem, FlatItemKind};
 
 pub enum SshTestMsg {
-    Line(String, String), // (content, timestamp "ss:ms")
+    Line(String, String),      // (content, timestamp "ss:ms")
     Done(Option<i32>, String), // (exit code, timestamp)
+    Error(String),
+}
+
+#[derive(Clone)]
+pub struct SftpEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+pub enum SftpStatus {
+    Connecting,
+    Ready,
+    Error(String),
+}
+
+pub enum SftpMsg {
+    Entries(Vec<SftpEntry>),
     Error(String),
 }
 
@@ -51,10 +68,23 @@ pub struct App {
     pub ssh_test_done_ts: Option<String>,
     /// Channel receiver for streaming SSH test output
     pub ssh_test_rx: Option<mpsc::Receiver<SshTestMsg>>,
+    // SFTP path completion popup
+    pub show_sftp: bool,
+    pub sftp_host: String,
+    pub sftp_path_input: String,
+    pub sftp_entries: Vec<SftpEntry>,
+    pub sftp_filtered: Vec<usize>,
+    pub sftp_selected: usize,
+    pub sftp_status: SftpStatus,
+    pub sftp_rx: Option<mpsc::Receiver<SftpMsg>>,
+    pub sftp_last_dir: String,
+    pub sftp_show_hidden: bool,
+    pub sftp_list_state: ListState,
+    pub sftp_chosen_path: Option<String>,
 }
 
 /// Fuzzy match: checks if all pattern chars appear in text in order (not necessarily consecutive).
-fn fuzzy_match(text: &str, pattern: &str, case_sensitive: bool) -> bool {
+pub(crate) fn fuzzy_match(text: &str, pattern: &str, case_sensitive: bool) -> bool {
     let mut pattern_chars = if case_sensitive {
         pattern.chars().peekable()
     } else {
@@ -200,6 +230,18 @@ impl App {
             ssh_test_result: None,
             ssh_test_done_ts: None,
             ssh_test_rx: None,
+            show_sftp: false,
+            sftp_host: String::new(),
+            sftp_path_input: String::new(),
+            sftp_entries: Vec::new(),
+            sftp_filtered: Vec::new(),
+            sftp_selected: 0,
+            sftp_status: SftpStatus::Ready,
+            sftp_rx: None,
+            sftp_last_dir: String::new(),
+            sftp_show_hidden: false,
+            sftp_list_state: ListState::default(),
+            sftp_chosen_path: None,
         }
     }
 
@@ -694,6 +736,209 @@ impl App {
                     self.ssh_test_rx = None;
                     return false;
                 }
+            }
+        }
+    }
+
+    // ── SFTP path completion ─────────────────────────────────────────
+
+    pub fn start_sftp_completion(&mut self) {
+        let Some(item) = self.selected_visible_item() else {
+            return;
+        };
+        if !matches!(item.kind, FlatItemKind::Host) {
+            return;
+        }
+        let Some(host) = item.connect_host.clone() else {
+            return;
+        };
+        self.sftp_host = host;
+        self.sftp_path_input = "./".to_string();
+        self.sftp_entries.clear();
+        self.sftp_filtered.clear();
+        self.sftp_selected = 0;
+        self.sftp_last_dir.clear();
+        self.sftp_chosen_path = None;
+        self.show_sftp = true;
+        self.sftp_request_listing("./");
+    }
+
+    pub fn sftp_request_listing(&mut self, dir: &str) {
+        self.sftp_status = SftpStatus::Connecting;
+        self.sftp_last_dir = dir.to_string();
+        self.sftp_entries.clear();
+        self.sftp_filtered.clear();
+        self.sftp_selected = 0;
+        self.sftp_list_state.select(Some(0));
+
+        let (tx, rx) = mpsc::channel();
+        self.sftp_rx = Some(rx);
+
+        let host = self.sftp_host.clone();
+        let dir = dir.to_string();
+        std::thread::spawn(move || {
+            // Shell-escape the path with single quotes
+            let escaped = dir.replace('\'', "'\\''");
+            let ls_cmd = format!("ls -1pa '{escaped}'");
+            let output = std::process::Command::new("ssh")
+                .args([
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "BatchMode=yes",
+                    &host,
+                    &ls_cmd,
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+
+            match output {
+                Ok(out) => {
+                    if out.status.success() {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let mut entries = vec![SftpEntry {
+                            name: "..".to_string(),
+                            is_dir: true,
+                        }];
+                        entries.extend(
+                            stdout
+                                .lines()
+                                .filter(|l| !l.is_empty() && *l != "./" && *l != "../")
+                                .map(|l| {
+                                    if let Some(name) = l.strip_suffix('/') {
+                                        SftpEntry {
+                                            name: name.to_string(),
+                                            is_dir: true,
+                                        }
+                                    } else {
+                                        SftpEntry {
+                                            name: l.to_string(),
+                                            is_dir: false,
+                                        }
+                                    }
+                                }),
+                        );
+                        let _ = tx.send(SftpMsg::Entries(entries));
+                    } else {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let msg = stderr.lines().last().unwrap_or("Unknown error").to_string();
+                        let _ = tx.send(SftpMsg::Error(msg));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(SftpMsg::Error(format!("Failed to run ssh: {e}")));
+                }
+            }
+        });
+    }
+
+    pub fn sftp_update_filter(&mut self) {
+        let file_part = self
+            .sftp_path_input
+            .rsplit_once('/')
+            .map(|(_, f)| f)
+            .unwrap_or("");
+
+        let is_hidden = |name: &str| name.starts_with('.') && name != "..";
+
+        if file_part.is_empty() {
+            let mut dirs: Vec<usize> = Vec::new();
+            let mut files: Vec<usize> = Vec::new();
+            for (i, e) in self.sftp_entries.iter().enumerate() {
+                if !self.sftp_show_hidden && is_hidden(&e.name) {
+                    continue;
+                }
+                if e.is_dir {
+                    dirs.push(i);
+                } else {
+                    files.push(i);
+                }
+            }
+            dirs.extend(files);
+            self.sftp_filtered = dirs;
+        } else {
+            let case_sensitive = file_part.chars().any(|c| c.is_uppercase());
+            let mut dirs: Vec<usize> = Vec::new();
+            let mut files: Vec<usize> = Vec::new();
+            for (i, e) in self.sftp_entries.iter().enumerate() {
+                if !self.sftp_show_hidden && is_hidden(&e.name) {
+                    continue;
+                }
+                if fuzzy_match(&e.name, file_part, case_sensitive) {
+                    if e.is_dir {
+                        dirs.push(i);
+                    } else {
+                        files.push(i);
+                    }
+                }
+            }
+            dirs.extend(files);
+            self.sftp_filtered = dirs;
+        }
+        self.sftp_selected = 0;
+        self.sftp_list_state.select(Some(0));
+    }
+
+    pub fn sftp_on_input_changed(&mut self) {
+        let dir_part = match self.sftp_path_input.rfind('/') {
+            Some(pos) => self.sftp_path_input[..=pos].to_string(),
+            None => "./".to_string(),
+        };
+        if dir_part != self.sftp_last_dir {
+            self.sftp_request_listing(&dir_part);
+        }
+        self.sftp_update_filter();
+    }
+
+    pub fn sftp_accept_selected(&mut self) {
+        let Some(&entry_idx) = self.sftp_filtered.get(self.sftp_selected) else {
+            return;
+        };
+        let entry = self.sftp_entries[entry_idx].clone();
+        let dir_base = match self.sftp_path_input.rfind('/') {
+            Some(pos) => self.sftp_path_input[..=pos].to_string(),
+            None => "./".to_string(),
+        };
+        if entry.is_dir && entry.name == ".." {
+            // Go up: remove last segment from dir_base
+            let trimmed = dir_base.trim_end_matches('/');
+            if let Some(pos) = trimmed.rfind('/') {
+                self.sftp_path_input = trimmed[..=pos].to_string();
+            } else {
+                self.sftp_path_input = "/".to_string();
+            }
+            self.sftp_on_input_changed();
+        } else if entry.is_dir {
+            self.sftp_path_input = format!("{dir_base}{}/", entry.name);
+            self.sftp_on_input_changed();
+        } else {
+            let full_path = format!("{dir_base}{}", entry.name);
+            self.sftp_chosen_path = Some(format!("{}:{full_path}", self.sftp_host));
+            self.show_sftp = false;
+            self.should_quit = true;
+        }
+    }
+
+    pub fn poll_sftp(&mut self) {
+        let Some(ref rx) = self.sftp_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(SftpMsg::Entries(entries)) => {
+                self.sftp_entries = entries;
+                self.sftp_status = SftpStatus::Ready;
+                self.sftp_rx = None;
+                self.sftp_update_filter();
+            }
+            Ok(SftpMsg::Error(msg)) => {
+                self.sftp_status = SftpStatus::Error(msg);
+                self.sftp_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.sftp_status = SftpStatus::Error("Connection lost".to_string());
+                self.sftp_rx = None;
             }
         }
     }

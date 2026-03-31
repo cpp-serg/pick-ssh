@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::App;
+use crate::app::{App, SftpStatus};
 use crate::theme::{Theme, theme_name_by_index};
 use crate::tree::FlatItemKind;
 
@@ -257,6 +257,15 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             ]),
             Line::from(vec![
                 Span::styled(
+                    "Ctrl+Spc ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Remote path completion"),
+            ]),
+            Line::from(vec![
+                Span::styled(
                     "Alt+r/e  ",
                     Style::default()
                         .fg(theme.accent_filter)
@@ -403,5 +412,120 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             )
             .scroll((app.ssh_test_scroll, 0));
         f.render_widget(paragraph, popup_area);
+    }
+
+    // SFTP path completion popup
+    if app.show_sftp {
+        let area = f.area();
+        let popup_width = area.width * 7 / 10;
+        let popup_height = area.height * 6 / 10;
+        let popup_area = Rect {
+            x: area.width.saturating_sub(popup_width) / 2,
+            y: area.height.saturating_sub(popup_height) / 2,
+            width: popup_width,
+            height: popup_height,
+        };
+        f.render_widget(Clear, popup_area);
+
+        let chunks =
+            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup_area);
+
+        // Input bar: host:path
+        let input_line = Line::from(vec![
+            Span::styled(
+                format!("{}:", app.sftp_host),
+                Style::default()
+                    .fg(theme.accent_header)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                app.sftp_path_input.as_str(),
+                Style::default().fg(theme.accent_filter),
+            ),
+        ]);
+        let input_title = match &app.sftp_status {
+            SftpStatus::Connecting => "Connecting...".to_string(),
+            SftpStatus::Ready => format!("Remote Path ({} entries)", app.sftp_filtered.len()),
+            SftpStatus::Error(msg) => format!("Error: {msg}"),
+        };
+        let input_border_color = match &app.sftp_status {
+            SftpStatus::Error(_) => theme.accent_header,
+            _ => theme.bg_hl,
+        };
+        let input_widget = Paragraph::new(input_line)
+            .style(Style::default().fg(theme.fg).bg(theme.bg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(input_title)
+                    .border_style(Style::default().fg(input_border_color))
+                    .style(Style::default().bg(theme.bg)),
+            );
+        f.render_widget(input_widget, chunks[0]);
+
+        // Cursor after path text
+        let host_prefix_len = app.sftp_host.len() + 1; // "host:"
+        f.set_cursor_position((
+            chunks[0].x + 1 + host_prefix_len as u16 + app.sftp_path_input.len() as u16,
+            chunks[0].y + 1,
+        ));
+
+        // Entry list
+        let items: Vec<ListItem> = app
+            .sftp_filtered
+            .iter()
+            .enumerate()
+            .map(|(vi, &idx)| {
+                let entry = &app.sftp_entries[idx];
+                let is_selected = vi == app.sftp_selected;
+                let label = if entry.is_dir {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.clone()
+                };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.fg_bright)
+                        .bg(theme.bg_hl)
+                        .add_modifier(Modifier::BOLD)
+                } else if entry.is_dir {
+                    Style::default().fg(theme.accent_header)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
+                let prefix = if is_selected {
+                    Span::styled(
+                        "▸ ",
+                        Style::default()
+                            .fg(theme.accent_marker)
+                            .bg(theme.bg_hl)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw("  ")
+                };
+                ListItem::new(Line::from(vec![prefix, Span::styled(label, style)]))
+            })
+            .collect();
+
+        if matches!(app.sftp_status, SftpStatus::Connecting) && items.is_empty() {
+            let msg = Paragraph::new("  Getting listing...")
+                .style(Style::default().fg(theme.fg_dim).bg(theme.bg))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.bg_hl))
+                        .style(Style::default().bg(theme.bg)),
+                );
+            f.render_widget(msg, chunks[1]);
+        } else {
+            let list = List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.bg_hl))
+                    .style(Style::default().bg(theme.bg)),
+            );
+            f.render_stateful_widget(list, chunks[1], &mut app.sftp_list_state);
+        }
     }
 }
