@@ -301,18 +301,22 @@ fn main() -> Result<()> {
     // SFTP path completion: output result
     if let Some(ref sftp_path) = app.sftp_chosen_path {
         let is_vim = matches!(ctx.cmd.as_str(), "vim" | "nvim" | "vi" | "view" | "vimdiff");
+        let is_mc = ctx.cmd == "mc";
         if cli.complete {
-            let output = if is_vim {
+            let output = if is_mc {
+                // mc: `mc sh://host:C/path`
+                let (host, path) = sftp_path.split_once(':').unwrap_or((sftp_path, ""));
+                let clean_path = path.strip_prefix("./").unwrap_or(path);
+                let dir = match clean_path.rfind('/') {
+                    Some(pos) => &clean_path[..=pos],
+                    None => "",
+                };
+                format!("mc sh://{host}:C/{dir}")
+            } else if is_vim {
                 // vim netrw: scp://host/relative or scp://host//absolute
                 let (host, path) = sftp_path.split_once(':').unwrap_or((sftp_path, ""));
                 let clean_path = path.strip_prefix("./").unwrap_or(path);
-                if clean_path.starts_with('/') {
-                    // Absolute: scp://host//etc/foo
-                    format!("{}scp://{host}/{clean_path}", ctx.output_prefix)
-                } else {
-                    // Relative: scp://host/foo/bar
-                    format!("{}scp://{host}/{clean_path}", ctx.output_prefix)
-                }
+                format!("{}scp://{host}/{clean_path}", ctx.output_prefix)
             } else if ctx.output_prefix.is_empty() || ctx.output_prefix == "ssh " {
                 format!("scp {sftp_path}")
             } else {
@@ -336,7 +340,13 @@ fn main() -> Result<()> {
             .unwrap_or_else(|| format!("ssh {host}"));
 
         if cli.complete {
-            let output = if app.print_only {
+            let output = if ctx.cmd == "mc" {
+                // mc: always insert (not execute)
+                let mc_cmd =
+                    format!("mc sh://{host}:C/");
+                print!("print:{mc_cmd}");
+                return Ok(());
+            } else if app.print_only {
                 // Tab in completion mode: insert host into command line context (no history args)
                 format!("{}{host}{}", ctx.output_prefix, ctx.output_suffix)
             } else if app.chosen_full_cmd.is_some() && ctx.output_prefix == "ssh " {
