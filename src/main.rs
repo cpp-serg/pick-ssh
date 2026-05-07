@@ -102,6 +102,38 @@ fn parse_line(line: &str) -> CompletionCtx {
     }
 }
 
+/// Open `$EDITOR` (or `vi`) on `file` at `line` (1-based). Blocks until the editor exits.
+/// Splits `$EDITOR` on whitespace so values like `code -w` or `nvim --noplugin` work.
+///
+/// Wires the editor's stdio to `/dev/tty` so it works even when pick-ssh's stdout is
+/// captured by shell command substitution (e.g. `result=$(pick-ssh ...)` in the
+/// shell-integration snippet).
+fn run_editor(file: &std::path::Path, line: usize) {
+    use std::process::Stdio;
+
+    let editor_str = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let mut parts = editor_str.split_whitespace();
+    let prog = parts.next().unwrap_or("vi");
+    let extra: Vec<&str> = parts.collect();
+
+    let mut cmd = Command::new(prog);
+    cmd.args(&extra)
+        .arg(format!("+{line}"))
+        .arg(file);
+
+    if let (Ok(tty_in), Ok(tty_out), Ok(tty_err)) = (
+        std::fs::File::open("/dev/tty"),
+        std::fs::OpenOptions::new().write(true).open("/dev/tty"),
+        std::fs::OpenOptions::new().write(true).open("/dev/tty"),
+    ) {
+        cmd.stdin(Stdio::from(tty_in))
+            .stdout(Stdio::from(tty_out))
+            .stderr(Stdio::from(tty_err));
+    }
+
+    let _ = cmd.status();
+}
+
 fn print_embed(shell: &str) -> Result<()> {
     let bin = std::env::current_exe()?.to_string_lossy().into_owned();
 
@@ -289,6 +321,51 @@ fn main() -> Result<()> {
             app.poll_sftp();
 
             event::handle_events(&mut app)?;
+
+            // Handle edit-in-place: suspend TUI, run $EDITOR, resume + reload config.
+            if let Some((file, line)) = app.edit_request.take() {
+                disable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture
+                )?;
+
+                run_editor(&file, line);
+
+                enable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    EnterAlternateScreen,
+                    EnableMouseCapture
+                )?;
+                terminal.clear()?;
+
+                // Reload config + history; preserve selection by host alias.
+                let prev_host = app
+                    .selected_visible_item()
+                    .and_then(|item| item.connect_host.clone());
+                let theme_index = app.theme_index;
+                let pinned = app.pinned.clone();
+                let root = load_ssh_config()?;
+                let hist = history::load_history();
+                let known = known_hosts::load_known_hosts();
+                app = App::new(root, hist, known, pinned);
+                app.theme_index = theme_index;
+                if let Some(host) = prev_host {
+                    let pos = app.visible.iter().position(|&idx| {
+                        app.items()[idx].connect_host.as_deref() == Some(host.as_str())
+                    });
+                    if let Some(p) = pos {
+                        app.selected = p;
+                        app.list_state.select(Some(p));
+                    } else {
+                        app.snap_to_first_host();
+                    }
+                } else {
+                    app.snap_to_first_host();
+                }
+            }
         }
 
         // Restore terminal

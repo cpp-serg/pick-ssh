@@ -19,12 +19,17 @@ const COLS: u16 = 100;
 /// Builder for a fake $HOME directory + spawned pick-ssh in a PTY.
 struct HarnessBuilder {
     files: HashMap<PathBuf, String>,
+    /// Files that should be marked executable (chmod 755).
+    executables: Vec<PathBuf>,
+    env: HashMap<String, String>,
 }
 
 impl HarnessBuilder {
     fn new() -> Self {
         Self {
             files: HashMap::new(),
+            executables: Vec::new(),
+            env: HashMap::new(),
         }
     }
 
@@ -34,7 +39,22 @@ impl HarnessBuilder {
         self
     }
 
+    /// Mark a previously-added file as executable.
+    #[allow(dead_code)]
+    fn executable(mut self, relative_path: &str) -> Self {
+        self.executables.push(PathBuf::from(relative_path));
+        self
+    }
+
+    /// Set an environment variable for the spawned binary.
+    fn env(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.env.insert(key.to_string(), value.into());
+        self
+    }
+
     fn spawn(self) -> Tui {
+        use std::os::unix::fs::PermissionsExt;
+
         let home = TempDir::new().expect("tempdir");
         for (rel, content) in &self.files {
             let path = home.path().join(rel);
@@ -42,6 +62,12 @@ impl HarnessBuilder {
                 fs::create_dir_all(parent).expect("mkdir parent");
             }
             fs::write(&path, content).expect("write fixture");
+        }
+        for rel in &self.executables {
+            let path = home.path().join(rel);
+            let mut perms = fs::metadata(&path).expect("stat fixture").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod fixture");
         }
 
         let pty = NativePtySystem::default();
@@ -59,6 +85,9 @@ impl HarnessBuilder {
         cmd.env("TERM", "xterm-256color");
         // Pin a theme so renders are deterministic.
         cmd.env("PICK_SSH_CONFIG", "theme=gruvbox-dark");
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
 
         let child = pair.slave.spawn_command(cmd).expect("spawn");
         drop(pair.slave);
@@ -157,6 +186,10 @@ impl Tui {
             let _ = w.flush();
         }
     }
+
+    fn home_path(&self) -> &std::path::Path {
+        self._home.path()
+    }
 }
 
 impl Drop for Tui {
@@ -169,6 +202,208 @@ impl Drop for Tui {
         let _ = self.master.take();
         let _ = self.writer.take();
     }
+}
+
+#[test]
+fn ctrl_e_works_when_pickssh_stdout_is_captured() {
+    // Reproduces the shell-integration bug: in zsh's `result=$(pick-ssh)` the binary's
+    // stdout is a pipe, not the terminal. Without the /dev/tty fix the editor's output
+    // would go into the pipe and the user sees nothing happen.
+    use std::os::unix::fs::PermissionsExt;
+
+    let editor_dir = TempDir::new().expect("editor tempdir");
+    let editor_path = editor_dir.path().join("fake-editor");
+    // Editor logs its args AND prints a marker to stdout. If the marker ends up in
+    // pick-ssh's captured stdout file, the editor's stdio was incorrectly inherited
+    // from pick-ssh instead of routed to /dev/tty.
+    fs::write(
+        &editor_path,
+        "#!/bin/sh\necho \"$@\" > \"$HOME/editor.log\"\necho EDITOR_STDOUT_MARKER\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&editor_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&editor_path, perms).unwrap();
+
+    // Use a wrapper shell to redirect stdout to a file before exec-ing pick-ssh.
+    let home = TempDir::new().expect("home");
+    let ssh_dir = home.path().join(".ssh");
+    fs::create_dir_all(&ssh_dir).unwrap();
+    fs::write(
+        ssh_dir.join("config"),
+        "Host alpha\n  HostName 10.0.0.1\n",
+    )
+    .unwrap();
+
+    let captured_path = home.path().join("captured.out");
+    let bin = env!("CARGO_BIN_EXE_pick-ssh").to_string();
+    let cmd_line = format!(
+        "exec {} > {}",
+        shell_escape(&bin),
+        shell_escape(&captured_path.display().to_string())
+    );
+
+    let pty = NativePtySystem::default();
+    let pair = pty
+        .openpty(PtySize {
+            rows: ROWS,
+            cols: COLS,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new("sh");
+    cmd.arg("-c");
+    cmd.arg(&cmd_line);
+    cmd.env("HOME", home.path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("PICK_SSH_CONFIG", "theme=gruvbox-dark");
+    cmd.env("EDITOR", editor_path.display().to_string());
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let mut writer = pair.master.take_writer().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Settle, send Ctrl+E, settle.
+    let settle = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        let max = std::time::Duration::from_millis(800);
+        let quiet = std::time::Duration::from_millis(80);
+        let deadline = std::time::Instant::now() + max;
+        let mut last = std::time::Instant::now();
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(_) => last = std::time::Instant::now(),
+                Err(_) => {
+                    if last.elapsed() >= quiet {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    settle(&rx);
+    writer.write_all(&[0x05]).unwrap(); // Ctrl+E
+    writer.flush().ok();
+    settle(&rx);
+
+    // Ask the binary to quit so the test exits cleanly.
+    writer.write_all(&[0x1b]).ok();
+    writer.flush().ok();
+    drop(writer);
+    drop(pair.master);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log_path = home.path().join("editor.log");
+    let log_content = fs::read_to_string(&log_path).unwrap_or_else(|e| {
+        panic!("editor log missing at {} — editor never invoked: {}", log_path.display(), e)
+    });
+    assert!(
+        log_content.contains("/.ssh/config"),
+        "editor log should contain config path; got: {log_content}"
+    );
+
+    // The marker must NOT end up in the captured stdout file: that would mean the
+    // editor inherited pick-ssh's redirected stdout instead of using /dev/tty.
+    let captured = fs::read_to_string(&captured_path).unwrap_or_default();
+    assert!(
+        !captured.contains("EDITOR_STDOUT_MARKER"),
+        "editor stdout leaked into pick-ssh's captured stdout. captured:\n{captured}"
+    );
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[test]
+fn ctrl_e_invokes_editor_with_correct_file_and_line() {
+    // Fake $EDITOR is a shell script that writes its args to $HOME/editor.log.
+    // The script lives in an external tempdir so its path is known before spawning
+    // the TUI. After Ctrl+E we verify the log contains the expected file path and +line.
+    use std::os::unix::fs::PermissionsExt;
+
+    let editor_dir = TempDir::new().expect("editor tempdir");
+    let editor_path = editor_dir.path().join("fake-editor");
+    fs::write(
+        &editor_path,
+        "#!/bin/sh\necho \"$@\" > \"$HOME/editor.log\"\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&editor_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&editor_path, perms).unwrap();
+
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            // Host alpha on line 1, Host beta on line 4.
+            "Host alpha\n  HostName 10.0.0.1\n\nHost beta\n  HostName 10.0.0.2\n",
+        )
+        .env("EDITOR", editor_path.display().to_string())
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    // Move down to the second host (beta, on line 4 of the config file), then Ctrl+E.
+    tui.send("\x1b[B"); // arrow down
+    tui.settle();
+    tui.send("\x05"); // Ctrl+E
+    tui.settle();
+
+    let log_path = home.join("editor.log");
+    let log_content = fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("editor log missing at {}: {}", log_path.display(), e));
+
+    assert!(
+        log_content.contains("+4"),
+        "expected +4 (line of `Host beta`) in editor args, got: {log_content}"
+    );
+    assert!(
+        log_content.contains("/.ssh/config"),
+        "expected config file path in editor args, got: {log_content}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn ctrl_e_on_known_host_shows_status_message() {
+    // Known-hosts entries have no source file; pressing Ctrl+E should display the
+    // "Edit only available for config entries" status without launching anything.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "")
+        .file(
+            ".ssh/known_hosts",
+            "10.0.0.99 ssh-rsa AAAA\n",
+        )
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    // Selection lands on the first host (10.0.0.99 in Known section).
+    tui.send("\x05"); // Ctrl+E
+    tui.settle();
+
+    let screen = tui.screen();
+    let joined = screen.join("\n");
+    assert!(
+        joined.contains("Edit only available"),
+        "status message missing.\n{joined}"
+    );
+
+    tui.quit();
 }
 
 #[test]

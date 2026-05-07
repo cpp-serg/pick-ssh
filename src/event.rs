@@ -20,6 +20,9 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // Any keypress clears a transient status message.
+            app.status_msg = None;
+
             // Dismiss help popup on any key
             if app.show_help {
                 app.show_help = false;
@@ -161,6 +164,9 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 }
                 KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.start_ssh_test();
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.start_edit();
                 }
                 KeyCode::Null
                 | KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {

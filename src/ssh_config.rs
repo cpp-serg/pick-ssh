@@ -32,7 +32,7 @@ fn parse_config(path: &Path) -> Result<(ConfigNode, Vec<HostEntry>)> {
     let mut current_host: Option<HostEntry> = None;
     let mut current_is_wildcard = false;
 
-    for line in content.lines() {
+    for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -68,6 +68,7 @@ fn parse_config(path: &Path) -> Result<(ConfigNode, Vec<HostEntry>)> {
                     port: None,
                     identity_file: None,
                     proxy_jump: None,
+                    line: line_num + 1,
                 });
             }
             "hostname" => {
@@ -290,6 +291,7 @@ mod tests {
                     port: None,
                     identity_file: None,
                     proxy_jump: None,
+                    line: 0,
                 },
                 HostEntry {
                     name: "labvm".into(),
@@ -298,6 +300,7 @@ mod tests {
                     port: None,
                     identity_file: None,
                     proxy_jump: None,
+                    line: 0,
                 },
             ],
             children: Vec::new(),
@@ -309,6 +312,7 @@ mod tests {
             port: None,
             identity_file: Some("~/.ssh/JumpHost.pem".into()),
             proxy_jump: None,
+                    line: 0,
         }];
 
         apply_defaults(&mut node, &wildcards);

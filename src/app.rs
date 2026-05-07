@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -82,6 +83,11 @@ pub struct App {
     pub sftp_show_hidden: bool,
     pub sftp_list_state: ListState,
     pub sftp_chosen_path: Option<String>,
+    /// When set, the main loop should suspend the TUI, open `$EDITOR` on the
+    /// given file at the given 1-based line, then resume and reload state.
+    pub edit_request: Option<(PathBuf, usize)>,
+    /// Transient status message shown in the filter bar (e.g. "edit only available for config entries").
+    pub status_msg: Option<String>,
 }
 
 /// Fuzzy score using nucleo-matcher. Higher is better. Returns None if no match.
@@ -135,6 +141,8 @@ impl App {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             });
             for cmd in &pinned {
                 let host = cmd.split_whitespace().nth(1).unwrap_or(cmd).to_string();
@@ -145,6 +153,8 @@ impl App {
                     connect_host: Some(host),
                     full_cmd: Some(cmd.clone()),
                     info: None,
+                    source_file: None,
+                    source_line: None,
                 });
             }
         }
@@ -159,6 +169,8 @@ impl App {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             });
             for entry in &history[..recent_count] {
                 all_items.push(FlatItem {
@@ -168,6 +180,8 @@ impl App {
                     connect_host: Some(entry.host.clone()),
                     full_cmd: Some(entry.full_cmd.clone()),
                     info: None,
+                    source_file: None,
+                    source_line: None,
                 });
             }
         }
@@ -184,6 +198,8 @@ impl App {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             });
             for entry in &history[recent_count..] {
                 all_items.push(FlatItem {
@@ -193,6 +209,8 @@ impl App {
                     connect_host: Some(entry.host.clone()),
                     full_cmd: Some(entry.full_cmd.clone()),
                     info: None,
+                    source_file: None,
+                    source_line: None,
                 });
             }
         }
@@ -216,6 +234,8 @@ impl App {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             });
             for host in new_known {
                 all_items.push(FlatItem {
@@ -225,6 +245,8 @@ impl App {
                     connect_host: Some(host),
                     full_cmd: None,
                     info: None,
+                    source_file: None,
+                    source_line: None,
                 });
             }
         }
@@ -269,6 +291,25 @@ impl App {
             sftp_show_hidden: false,
             sftp_list_state: ListState::default(),
             sftp_chosen_path: None,
+            edit_request: None,
+            status_msg: None,
+        }
+    }
+
+    /// Request the main loop to open $EDITOR on the selected host's config file.
+    /// Sets a status message if the selected entry has no source file.
+    pub fn start_edit(&mut self) {
+        let Some(item) = self.selected_visible_item() else {
+            return;
+        };
+        match (item.source_file.clone(), item.source_line) {
+            (Some(file), Some(line)) => {
+                self.edit_request = Some((file, line));
+            }
+            _ => {
+                self.status_msg =
+                    Some("Edit only available for config entries".to_string());
+            }
         }
     }
 
@@ -1069,6 +1110,8 @@ impl App {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             });
             for cmd in &self.pinned {
                 let host = cmd.split_whitespace().nth(1).unwrap_or(cmd).to_string();
@@ -1079,6 +1122,8 @@ impl App {
                     connect_host: Some(host),
                     full_cmd: Some(cmd.clone()),
                     info: None,
+                    source_file: None,
+                    source_line: None,
                 });
             }
         }
@@ -1148,6 +1193,8 @@ mod tests {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
             FlatItem {
                 kind: FlatItemKind::Host,
@@ -1156,6 +1203,8 @@ mod tests {
                 connect_host: Some("mongo-prod-replica".into()),
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
             FlatItem {
                 kind: FlatItemKind::Host,
@@ -1164,6 +1213,8 @@ mod tests {
                 connect_host: Some("prod-db".into()),
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
         ];
         app.visible = (0..app.all_items.len()).collect();
@@ -1202,6 +1253,8 @@ mod tests {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
             FlatItem {
                 kind: FlatItemKind::Host,
@@ -1210,6 +1263,8 @@ mod tests {
                 connect_host: Some("queue-worker".into()),
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
             FlatItem {
                 kind: FlatItemKind::File,
@@ -1218,6 +1273,8 @@ mod tests {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
             FlatItem {
                 kind: FlatItemKind::Host,
@@ -1226,6 +1283,8 @@ mod tests {
                 connect_host: Some("ueransim".into()),
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
         ];
         app.visible = (0..app.all_items.len()).collect();
@@ -1256,6 +1315,8 @@ mod tests {
                 connect_host: None,
                 full_cmd: None,
                 info: None,
+                source_file: None,
+                source_line: None,
             },
             FlatItem {
                 kind: FlatItemKind::Host,
@@ -1264,6 +1325,8 @@ mod tests {
                 connect_host: Some("main-a1".into()),
                 full_cmd: None,
                 info: Some("root@10.0.0.128/JumpHost.pem:bastion".into()),
+                source_file: None,
+                source_line: None,
             },
         ];
         app.visible = (0..app.all_items.len()).collect();

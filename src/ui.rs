@@ -15,7 +15,11 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
 
     // Filter input
     let filter_text = format!("> {}", app.filter);
-    let title = if app.confirm_clear_pins {
+    let status_owned;
+    let title = if let Some(ref msg) = app.status_msg {
+        status_owned = msg.clone();
+        status_owned.as_str()
+    } else if app.confirm_clear_pins {
         "Clear all pins? Press Ctrl+Shift+P to confirm"
     } else if app.theme_changed {
         theme_name_by_index(app.theme_index)
@@ -254,6 +258,15 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("Test SSH connection"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+e   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Edit config entry in $EDITOR"),
             ]),
             Line::from(vec![
                 Span::styled(

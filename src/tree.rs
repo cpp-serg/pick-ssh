@@ -8,6 +8,8 @@ pub struct HostEntry {
     pub port: Option<u16>,
     pub identity_file: Option<String>,
     pub proxy_jump: Option<String>,
+    /// 1-based line number of the `Host` directive in the source file.
+    pub line: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,10 @@ pub struct FlatItem {
     pub full_cmd: Option<String>,
     /// Informational hint (e.g., user:key:jump_host) for config entries
     pub info: Option<String>,
+    /// For config-defined hosts: path to the source file containing the Host block.
+    pub source_file: Option<PathBuf>,
+    /// For config-defined hosts: 1-based line number of the Host directive.
+    pub source_line: Option<usize>,
 }
 
 /// Build informational string: [user@]<ip>[:<key_file_name>][:<jump_host>]
@@ -100,6 +106,8 @@ impl ConfigNode {
             connect_host: None,
             full_cmd: None,
             info: None,
+            source_file: None,
+            source_line: None,
         });
 
         for host in &self.hosts {
@@ -111,6 +119,8 @@ impl ConfigNode {
                 connect_host: Some(host.name.clone()),
                 full_cmd: None,
                 info,
+                source_file: Some(self.path.clone()),
+                source_line: Some(host.line),
             });
         }
 
