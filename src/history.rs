@@ -7,54 +7,139 @@ pub struct HistoryEntry {
     pub full_cmd: String,
 }
 
-/// Loads SSH-related hosts from ~/.zsh_history, sorted by recency (most recent first),
-/// deduplicated (keeping most recent occurrence).
+/// Loads SSH-related hosts from the user's shell histories (zsh, bash, fish),
+/// merged and sorted newest-first by timestamp where available, then deduplicated.
 pub fn load_history() -> Vec<HistoryEntry> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let path = home.join(".zsh_history");
-    let data = match fs::read(&path) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
-    let content = String::from_utf8_lossy(&data);
 
-    let mut entries = Vec::new();
-    for line in content.lines() {
-        let cmd = parse_history_line(line);
-        if let Some(host) = extract_host(cmd) {
+    let mut all: Vec<(Option<u64>, String)> = Vec::new();
+
+    if let Ok(bytes) = fs::read(home.join(".zsh_history")) {
+        let s = String::from_utf8_lossy(&bytes);
+        all.extend(parse_zsh(&s));
+    }
+    if let Ok(bytes) = fs::read(home.join(".bash_history")) {
+        let s = String::from_utf8_lossy(&bytes);
+        all.extend(parse_bash(&s));
+    }
+    if let Ok(bytes) = fs::read(home.join(".local/share/fish/fish_history")) {
+        let s = String::from_utf8_lossy(&bytes);
+        all.extend(parse_fish(&s));
+    }
+
+    // Newest-first by timestamp; entries without timestamps go to the end in stable order.
+    all.sort_by(|a, b| match (a.0, b.0) {
+        (Some(x), Some(y)) => y.cmp(&x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    let mut entries: Vec<HistoryEntry> = Vec::new();
+    for (_, cmd) in all {
+        if let Some(host) = extract_host(&cmd) {
             entries.push(HistoryEntry {
                 host,
-                full_cmd: cmd.to_string(),
+                full_cmd: cmd,
             });
         }
     }
 
-    // Deduplicate by full command keeping most recent (last occurrence)
+    // Dedup by full command, keeping the first (newest) occurrence.
     let mut seen = HashSet::new();
     let mut deduped = Vec::new();
-    for entry in entries.into_iter().rev() {
+    for entry in entries {
         if seen.insert(entry.full_cmd.clone()) {
             deduped.push(entry);
         }
     }
-    deduped.reverse();
-
-    // Most recent first
-    deduped.reverse();
     deduped
 }
 
-/// Parse a zsh history line. Format: `: TIMESTAMP:0;COMMAND` or just `COMMAND`.
-fn parse_history_line(line: &str) -> &str {
-    if let Some(rest) = line.strip_prefix(": ") {
-        // `: 1234567890:0;actual command`
-        if let Some(pos) = rest.find(';') {
-            return &rest[pos + 1..];
+/// Parse zsh history. Format: `: TIMESTAMP:0;COMMAND` or just `COMMAND`.
+fn parse_zsh(content: &str) -> Vec<(Option<u64>, String)> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix(": ")
+            && let Some((meta, cmd)) = rest.split_once(';')
+        {
+            let ts = meta.split_once(':').and_then(|(t, _)| t.parse().ok());
+            out.push((ts, cmd.to_string()));
+        } else if !line.is_empty() {
+            out.push((None, line.to_string()));
         }
     }
-    line
+    out
+}
+
+/// Parse bash history. With `HISTTIMEFORMAT` set, lines are preceded by `#<unix-ts>`.
+/// Without it, each line is a plain command.
+fn parse_bash(content: &str) -> Vec<(Option<u64>, String)> {
+    let mut out = Vec::new();
+    let mut pending_ts: Option<u64> = None;
+    for line in content.lines() {
+        if let Some(ts_str) = line.strip_prefix('#')
+            && let Ok(ts) = ts_str.parse::<u64>()
+        {
+            pending_ts = Some(ts);
+            continue;
+        }
+        if !line.is_empty() {
+            out.push((pending_ts.take(), line.to_string()));
+        }
+    }
+    out
+}
+
+/// Parse fish history. YAML-ish blocks:
+///   - cmd: COMMAND
+///     when: TIMESTAMP
+///     paths:
+///       - some/path
+fn parse_fish(content: &str) -> Vec<(Option<u64>, String)> {
+    let mut out = Vec::new();
+    let mut current_cmd: Option<String> = None;
+    let mut current_ts: Option<u64> = None;
+
+    for line in content.lines() {
+        if let Some(cmd) = line.strip_prefix("- cmd: ") {
+            if let Some(c) = current_cmd.take() {
+                out.push((current_ts.take(), c));
+            }
+            current_cmd = Some(unescape_fish(cmd));
+        } else if let Some(rest) = line.strip_prefix("  when: ") {
+            current_ts = rest.trim().parse().ok();
+        }
+    }
+    if let Some(c) = current_cmd.take() {
+        out.push((current_ts.take(), c));
+    }
+    out
+}
+
+/// Fish escapes backslashes as `\\` and embedded newlines as `\n` in the cmd field.
+/// We collapse `\n` to a space (multi-line commands get joined) and unescape `\\` to `\`.
+fn unescape_fish(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push(' '),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 // SSH flags that consume the next argument (so we skip that arg as a host candidate)
@@ -137,16 +222,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_history_line_zsh_format() {
+    fn test_parse_zsh_with_timestamp() {
+        let entries = parse_zsh(": 1234567890:0;ssh myhost\n");
+        assert_eq!(entries, vec![(Some(1234567890), "ssh myhost".to_string())]);
+    }
+
+    #[test]
+    fn test_parse_zsh_plain() {
+        let entries = parse_zsh("ssh myhost\n");
+        assert_eq!(entries, vec![(None, "ssh myhost".to_string())]);
+    }
+
+    #[test]
+    fn test_parse_zsh_mixed() {
+        let entries = parse_zsh(": 100:0;ssh a\n\n: 200:0;ssh b\nbarecmd\n");
         assert_eq!(
-            parse_history_line(": 1234567890:0;ssh myhost"),
-            "ssh myhost"
+            entries,
+            vec![
+                (Some(100), "ssh a".to_string()),
+                (Some(200), "ssh b".to_string()),
+                (None, "barecmd".to_string()),
+            ]
         );
     }
 
     #[test]
-    fn test_parse_history_line_plain() {
-        assert_eq!(parse_history_line("ssh myhost"), "ssh myhost");
+    fn test_parse_bash_no_timestamps() {
+        let entries = parse_bash("ssh a\nssh b\n");
+        assert_eq!(
+            entries,
+            vec![(None, "ssh a".to_string()), (None, "ssh b".to_string()),]
+        );
+    }
+
+    #[test]
+    fn test_parse_bash_with_timestamps() {
+        let entries = parse_bash("#100\nssh a\n#200\nssh b\n");
+        assert_eq!(
+            entries,
+            vec![
+                (Some(100), "ssh a".to_string()),
+                (Some(200), "ssh b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_bash_pound_non_timestamp() {
+        // `#` lines that aren't valid timestamps fall through as commands;
+        // extract_host filters them out later if they're not ssh-family.
+        let entries = parse_bash("#abc\nssh a\n");
+        assert_eq!(
+            entries,
+            vec![(None, "#abc".to_string()), (None, "ssh a".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_parse_fish_basic() {
+        let content = "- cmd: ssh a\n  when: 100\n- cmd: ssh b\n  when: 200\n";
+        let entries = parse_fish(content);
+        assert_eq!(
+            entries,
+            vec![
+                (Some(100), "ssh a".to_string()),
+                (Some(200), "ssh b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_fish_with_paths_block() {
+        let content = "- cmd: ssh a\n  when: 100\n  paths:\n    - foo\n- cmd: ssh b\n  when: 200\n";
+        let entries = parse_fish(content);
+        assert_eq!(
+            entries,
+            vec![
+                (Some(100), "ssh a".to_string()),
+                (Some(200), "ssh b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_fish_no_timestamp() {
+        let content = "- cmd: ssh a\n";
+        let entries = parse_fish(content);
+        assert_eq!(entries, vec![(None, "ssh a".to_string())]);
+    }
+
+    #[test]
+    fn test_unescape_fish() {
+        assert_eq!(unescape_fish("plain"), "plain");
+        assert_eq!(unescape_fish(r"with\\backslash"), "with\\backslash");
+        assert_eq!(unescape_fish(r"line1\nline2"), "line1 line2");
+        assert_eq!(unescape_fish(r"a\\b\nc"), "a\\b c");
+        assert_eq!(unescape_fish(r"trailing\\"), "trailing\\");
     }
 
     #[test]
