@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod history;
+mod known_hosts;
 mod pinned;
 mod ssh_config;
 mod theme;
@@ -224,7 +225,8 @@ fn main() -> Result<()> {
 
     let root = load_ssh_config()?;
     let hist = history::load_history();
-    let mut app = App::new(root, hist, cfg.pinned);
+    let known = known_hosts::load_known_hosts();
+    let mut app = App::new(root, hist, known, cfg.pinned);
     app.theme_index = theme_index;
 
     // Check if filter looks like host:path — jump straight to SFTP completion

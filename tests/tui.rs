@@ -150,26 +150,109 @@ impl Tui {
         self.screen().into_iter().position(|row| row.contains(needle))
     }
 
-    /// Quit the TUI cleanly (Esc) so the child exits before we drop.
+    /// Send Esc to ask the TUI to quit. Cleanup happens in Drop.
     fn quit(&mut self) {
-        if let Some(mut w) = self.writer.take() {
+        if let Some(w) = self.writer.as_mut() {
             let _ = w.write_all(&[0x1b]);
             let _ = w.flush();
-        }
-        // Dropping master closes the PTY.
-        let _ = self.master.take();
-        if let Some(mut child) = self.child.take() {
-            let _ = child.wait();
         }
     }
 }
 
 impl Drop for Tui {
     fn drop(&mut self) {
+        // Kill the child first so it stops reading from the PTY, then drop master.
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
+            let _ = child.wait();
         }
+        let _ = self.master.take();
+        let _ = self.writer.take();
     }
+}
+
+#[test]
+fn known_hosts_appear_in_their_own_section() {
+    // ~/.ssh/known_hosts has a mix of plain entries, comma-separated aliases,
+    // bracketed-port form, hashed (skipped), and a comment. Only the plain ones
+    // should appear under a "Known" section.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host alpha\n  HostName 10.0.0.1\n")
+        .file(
+            ".ssh/known_hosts",
+            "\
+# auto-managed
+plain.example.com ssh-rsa AAAA
+multi.example.com,1.2.3.4 ssh-ed25519 AAAA
+[ported.example.com]:2222 ssh-ed25519 AAAA
+|1|hashed=|hashed= ssh-rsa AAAA
+",
+        )
+        .spawn();
+
+    let screen = tui.screen();
+    let known_hdr = screen
+        .iter()
+        .position(|row| row.contains("Known"))
+        .unwrap_or_else(|| panic!("Known section header missing.\n{}", screen.join("\n")));
+
+    let joined = screen.join("\n");
+    assert!(
+        joined.contains("plain.example.com"),
+        "plain entry missing.\n{joined}"
+    );
+    assert!(
+        joined.contains("multi.example.com"),
+        "comma-aliased entry missing.\n{joined}"
+    );
+    assert!(
+        joined.contains("1.2.3.4"),
+        "comma-aliased ip missing.\n{joined}"
+    );
+    assert!(
+        joined.contains("ported.example.com"),
+        "[host]:port form missing.\n{joined}"
+    );
+    assert!(
+        !joined.contains("hashed"),
+        "hashed entry should not appear.\n{joined}"
+    );
+    // Section header should come before any of its entries.
+    let plain_row = screen
+        .iter()
+        .position(|row| row.contains("plain.example.com"))
+        .unwrap();
+    assert!(known_hdr < plain_row);
+
+    tui.quit();
+}
+
+#[test]
+fn known_host_dedupes_against_config_alias() {
+    // If `~/.ssh/config` has an alias whose name matches a known_hosts entry,
+    // the known_hosts entry should not show up duplicated.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host shared.example.com\n  HostName 10.0.0.1\n")
+        .file(
+            ".ssh/known_hosts",
+            "shared.example.com ssh-rsa AAAA\nunique.example.com ssh-rsa AAAA\n",
+        )
+        .spawn();
+
+    let screen = tui.screen();
+    let joined = screen.join("\n");
+
+    // `shared.example.com` should appear exactly once (under config), and `unique`
+    // should appear once under Known.
+    let shared_count = joined.matches("shared.example.com").count();
+    let unique_count = joined.matches("unique.example.com").count();
+    assert_eq!(
+        shared_count, 1,
+        "shared host should appear once, not duplicated.\n{joined}"
+    );
+    assert_eq!(unique_count, 1, "unique host missing.\n{joined}");
+
+    tui.quit();
 }
 
 #[test]

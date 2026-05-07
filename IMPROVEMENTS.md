@@ -4,15 +4,13 @@ Roughly ordered by ROI. Bugs and code-quality fixes at the bottom are small and 
 
 ## High-value features
 
-1. **`~/.ssh/known_hosts` as a source.** Many hosts you've connected to don't have a `Host` block. Parse known_hosts as another section (filter out hashed entries).
+1. **Reachability indicator.** Cache the last `Ctrl+T` test result (or run a fast TCP-port-22 probe in the background for visible hosts) and render a coloured dot in the prefix column. Persist across sessions in the YAML config.
 
-2. **Reachability indicator.** Cache the last `Ctrl+T` test result (or run a fast TCP-port-22 probe in the background for visible hosts) and render a coloured dot in the prefix column. Persist across sessions in the YAML config.
+2. **Edit-in-place.** A keybind to open `$EDITOR` on the `~/.ssh/config` (or the right `Include`'d file) at the line of the selected entry. The parser already knows the source path per node.
 
-3. **Edit-in-place.** A keybind to open `$EDITOR` on the `~/.ssh/config` (or the right `Include`'d file) at the line of the selected entry. The parser already knows the source path per node.
+3. **Add-new-host form.** A small popup capturing alias / HostName / User / Port / IdentityFile, then appended to the chosen file. Closes the loop for a tool you reach for daily.
 
-4. **Add-new-host form.** A small popup capturing alias / HostName / User / Port / IdentityFile, then appended to the chosen file. Closes the loop for a tool you reach for daily.
-
-5. **Alternative actions.** Beyond ssh/scp: `mosh`, `ssh-copy-id`, `sshfs`, `tmux new -s host`, `code --remote ssh-remote+host`. Could be a sub-popup ("Action: ssh / mosh / scp / sshfs…") triggered with e.g. `Ctrl+A`.
+4. **Alternative actions.** Beyond ssh/scp: `mosh`, `ssh-copy-id`, `sshfs`, `tmux new -s host`, `code --remote ssh-remote+host`. Could be a sub-popup ("Action: ssh / mosh / scp / sshfs…") triggered with e.g. `Ctrl+A`.
 
 ## Bugs / code quality
 

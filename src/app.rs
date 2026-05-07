@@ -118,7 +118,12 @@ fn exact_score(text: &str, pattern: &str, case_sensitive: bool) -> Option<u32> {
 }
 
 impl App {
-    pub fn new(root: ConfigNode, history: Vec<HistoryEntry>, pinned: Vec<String>) -> Self {
+    pub fn new(
+        root: ConfigNode,
+        history: Vec<HistoryEntry>,
+        known_hosts: Vec<String>,
+        pinned: Vec<String>,
+    ) -> Self {
         let mut all_items = Vec::new();
 
         // Pinned section
@@ -187,6 +192,38 @@ impl App {
                     depth: 1,
                     connect_host: Some(entry.host.clone()),
                     full_cmd: Some(entry.full_cmd.clone()),
+                    info: None,
+                });
+            }
+        }
+
+        // Known hosts section: entries from ~/.ssh/known_hosts not already represented
+        // by an alias (config) or recent/history command. Goes last because it's the
+        // largest noisiest source.
+        let existing: std::collections::HashSet<String> = all_items
+            .iter()
+            .filter_map(|it| it.connect_host.clone())
+            .collect();
+        let new_known: Vec<String> = known_hosts
+            .into_iter()
+            .filter(|h| !existing.contains(h))
+            .collect();
+        if !new_known.is_empty() {
+            all_items.push(FlatItem {
+                kind: FlatItemKind::File,
+                label: "Known".to_string(),
+                depth: 0,
+                connect_host: None,
+                full_cmd: None,
+                info: None,
+            });
+            for host in new_known {
+                all_items.push(FlatItem {
+                    kind: FlatItemKind::Host,
+                    label: host.clone(),
+                    depth: 1,
+                    connect_host: Some(host),
+                    full_cmd: None,
                     info: None,
                 });
             }
@@ -1102,7 +1139,7 @@ mod tests {
             hosts: vec![],
             children: vec![],
         };
-        let mut app = App::new(root, vec![], vec![]);
+        let mut app = App::new(root, vec![], vec![], vec![]);
         app.all_items = vec![
             FlatItem {
                 kind: FlatItemKind::File,
@@ -1156,7 +1193,7 @@ mod tests {
             hosts: vec![],
             children: vec![],
         };
-        let mut app = App::new(root, vec![], vec![]);
+        let mut app = App::new(root, vec![], vec![], vec![]);
         app.all_items = vec![
             FlatItem {
                 kind: FlatItemKind::File,
@@ -1210,7 +1247,7 @@ mod tests {
             hosts: vec![],
             children: vec![],
         };
-        let mut app = App::new(root, vec![], vec![]);
+        let mut app = App::new(root, vec![], vec![], vec![]);
         app.all_items = vec![
             FlatItem {
                 kind: FlatItemKind::File,
