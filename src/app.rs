@@ -310,7 +310,9 @@ impl App {
                             .full_cmd
                             .as_ref()
                             .is_some_and(|cmd| cmd.split_whitespace().count() > 2 && matches(cmd));
-                        host_visible[i] = any_ancestor || matches(&item.label) || cmd_matches;
+                        let info_matches = item.info.as_ref().is_some_and(|info| matches(info));
+                        host_visible[i] =
+                            any_ancestor || matches(&item.label) || cmd_matches || info_matches;
                     }
                 }
             }
@@ -1039,5 +1041,55 @@ mod tests {
     fn test_fuzzy_match_empty_pattern() {
         assert!(fuzzy_match("anything", "", false));
         assert!(fuzzy_match("anything", "", true));
+    }
+
+    #[test]
+    fn test_filter_matches_info() {
+        // Host whose alias is opaque but info contains the IP / jump host the user remembers.
+        let root = ConfigNode {
+            path: std::path::PathBuf::from("config"),
+            hosts: vec![],
+            children: vec![],
+        };
+        let mut app = App::new(root, vec![], vec![]);
+        app.all_items = vec![
+            FlatItem {
+                kind: FlatItemKind::File,
+                label: "config".into(),
+                depth: 0,
+                connect_host: None,
+                full_cmd: None,
+                info: None,
+            },
+            FlatItem {
+                kind: FlatItemKind::Host,
+                label: "main-a1".into(),
+                depth: 1,
+                connect_host: Some("main-a1".into()),
+                full_cmd: None,
+                info: Some("root@10.0.0.128/JumpHost.pem:bastion".into()),
+            },
+        ];
+        app.visible = (0..app.all_items.len()).collect();
+
+        // Match by IP fragment from info
+        app.filter = "10.0".into();
+        app.update_filter();
+        assert_eq!(app.visible.len(), 2, "header + host should be visible");
+
+        // Match by jump host from info
+        app.filter = "bastion".into();
+        app.update_filter();
+        assert_eq!(app.visible.len(), 2);
+
+        // Match by identity-file name
+        app.filter = "JumpHost".into();
+        app.update_filter();
+        assert_eq!(app.visible.len(), 2);
+
+        // Non-matching filter still hides the host
+        app.filter = "nomatch".into();
+        app.update_filter();
+        assert_eq!(app.visible.len(), 0);
     }
 }
