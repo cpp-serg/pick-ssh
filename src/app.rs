@@ -1,5 +1,6 @@
 use std::sync::mpsc;
 
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::widgets::ListState;
 
 use crate::history::HistoryEntry;
@@ -83,48 +84,37 @@ pub struct App {
     pub sftp_chosen_path: Option<String>,
 }
 
-/// Fuzzy match: checks if all pattern chars appear in text in order (not necessarily consecutive).
+/// Fuzzy score using nucleo-matcher. Higher is better. Returns None if no match.
+fn fuzzy_score(
+    matcher: &mut Matcher,
+    text: &str,
+    pattern: &str,
+    case_sensitive: bool,
+) -> Option<u32> {
+    matcher.config.ignore_case = !case_sensitive;
+    let mut hay_buf = Vec::new();
+    let mut needle_buf = Vec::new();
+    let haystack = Utf32Str::new(text, &mut hay_buf);
+    let needle = Utf32Str::new(pattern, &mut needle_buf);
+    matcher.fuzzy_match(haystack, needle).map(u32::from)
+}
+
+/// Boolean fuzzy match. Used by SFTP filename filter where ranking isn't needed.
 pub(crate) fn fuzzy_match(text: &str, pattern: &str, case_sensitive: bool) -> bool {
-    let mut pattern_chars = if case_sensitive {
-        pattern.chars().peekable()
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    fuzzy_score(&mut matcher, text, pattern, case_sensitive).is_some()
+}
+
+/// Exact (substring) score with smart case. Earlier match position = higher score.
+fn exact_score(text: &str, pattern: &str, case_sensitive: bool) -> Option<u32> {
+    let pos = if case_sensitive {
+        text.find(pattern)?
     } else {
-        // We need owned iterators; collect then iterate
-        return fuzzy_match_lower(text, pattern);
+        let tl: String = text.chars().flat_map(|c| c.to_lowercase()).collect();
+        let pl: String = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
+        tl.find(&pl)?
     };
-
-    for tc in text.chars() {
-        if let Some(&pc) = pattern_chars.peek() {
-            if tc == pc {
-                pattern_chars.next();
-            }
-        } else {
-            break;
-        }
-    }
-    pattern_chars.peek().is_none()
-}
-
-fn fuzzy_match_lower(text: &str, pattern: &str) -> bool {
-    let text_lower: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
-    let pattern_lower: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
-    let mut pi = 0;
-    for &tc in &text_lower {
-        if pi < pattern_lower.len() && tc == pattern_lower[pi] {
-            pi += 1;
-        }
-    }
-    pi == pattern_lower.len()
-}
-
-/// Exact (substring) match with smart case.
-fn exact_match(text: &str, pattern: &str, case_sensitive: bool) -> bool {
-    if case_sensitive {
-        text.contains(pattern)
-    } else {
-        let text_lower: String = text.chars().flat_map(|c| c.to_lowercase()).collect();
-        let pattern_lower: String = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
-        text_lower.contains(&pattern_lower)
-    }
+    Some(u32::MAX - pos as u32)
 }
 
 impl App {
@@ -284,16 +274,19 @@ impl App {
             };
             // Smart case: lowercase-only → case-insensitive; any uppercase → case-sensitive
             let case_sensitive = filter.chars().any(|c| c.is_uppercase());
-            let matches = |text: &str| -> bool {
+
+            let mut matcher = Matcher::new(Config::DEFAULT);
+            let score = |matcher: &mut Matcher, text: &str| -> Option<u32> {
                 if exact {
-                    exact_match(text, &filter, case_sensitive)
+                    exact_score(text, &filter, case_sensitive)
                 } else {
-                    fuzzy_match(text, &filter, case_sensitive)
+                    fuzzy_score(matcher, text, &filter, case_sensitive)
                 }
             };
 
-            // A host is visible if it matches OR any ancestor File header matches.
-            let mut host_visible = vec![false; self.all_items.len()];
+            // host_score: Some(s) means visible at score s. None means hidden.
+            // Ancestor-only matches get score 0 so they sort to the bottom of the section.
+            let mut host_score: Vec<Option<u32>> = vec![None; self.all_items.len()];
             let mut ancestor_stack: Vec<(usize, bool)> = Vec::new();
 
             for (i, item) in self.all_items.iter().enumerate() {
@@ -302,44 +295,101 @@ impl App {
                         while ancestor_stack.last().is_some_and(|&(d, _)| d >= item.depth) {
                             ancestor_stack.pop();
                         }
-                        ancestor_stack.push((item.depth, matches(&item.label)));
+                        let m = score(&mut matcher, &item.label).is_some();
+                        ancestor_stack.push((item.depth, m));
                     }
                     FlatItemKind::Host => {
                         let any_ancestor = ancestor_stack.iter().any(|&(_, m)| m);
-                        let cmd_matches = item
+                        let label_score = score(&mut matcher, &item.label);
+                        let cmd_score = item
                             .full_cmd
                             .as_ref()
-                            .is_some_and(|cmd| cmd.split_whitespace().count() > 2 && matches(cmd));
-                        let info_matches = item.info.as_ref().is_some_and(|info| matches(info));
-                        host_visible[i] =
-                            any_ancestor || matches(&item.label) || cmd_matches || info_matches;
+                            .filter(|cmd| cmd.split_whitespace().count() > 2)
+                            .and_then(|cmd| score(&mut matcher, cmd));
+                        let info_score = item
+                            .info
+                            .as_ref()
+                            .and_then(|info| score(&mut matcher, info));
+                        let best = [label_score, cmd_score, info_score]
+                            .into_iter()
+                            .flatten()
+                            .max();
+                        host_score[i] = match (best, any_ancestor) {
+                            (Some(s), _) => Some(s),
+                            (None, true) => Some(0),
+                            (None, false) => None,
+                        };
                     }
                 }
             }
 
-            self.visible = self
-                .all_items
-                .iter()
-                .enumerate()
-                .filter(|(i, item)| match item.kind {
-                    FlatItemKind::File => true,
-                    FlatItemKind::Host => host_visible[*i],
-                })
-                .map(|(i, _)| i)
-                .collect();
+            // Build visible list with hosts sorted by score (desc) within each File-run.
+            // File headers separate sort groups, preserving the tree structure.
+            let mut visible: Vec<usize> = Vec::new();
+            let mut section: Vec<usize> = Vec::new();
+            let flush = |visible: &mut Vec<usize>, section: &mut Vec<usize>, scores: &[Option<u32>]| {
+                section.sort_by_key(|&i| std::cmp::Reverse(scores[i]));
+                visible.append(section);
+            };
+            for (i, item) in self.all_items.iter().enumerate() {
+                match item.kind {
+                    FlatItemKind::File => {
+                        flush(&mut visible, &mut section, &host_score);
+                        visible.push(i);
+                    }
+                    FlatItemKind::Host => {
+                        if host_score[i].is_some() {
+                            section.push(i);
+                        }
+                    }
+                }
+            }
+            flush(&mut visible, &mut section, &host_score);
 
+            // Reorder sections (any File header starts a new section, regardless of
+            // depth) by their best contained host score, descending. This lets a
+            // deeply-nested Include with a strong match float to the top of the list.
+            let mut chunks: Vec<(Option<u32>, Vec<usize>)> = Vec::new();
+            let mut current: Vec<usize> = Vec::new();
+            let mut current_best: Option<u32> = None;
+            for &idx in &visible {
+                let item = &self.all_items[idx];
+                if matches!(item.kind, FlatItemKind::File) && !current.is_empty() {
+                    chunks.push((current_best.take(), std::mem::take(&mut current)));
+                }
+                if let FlatItemKind::Host = item.kind
+                    && let Some(s) = host_score[idx]
+                {
+                    current_best = Some(current_best.map_or(s, |c| c.max(s)));
+                }
+                current.push(idx);
+            }
+            if !current.is_empty() {
+                chunks.push((current_best, current));
+            }
+            chunks.sort_by(|a, b| b.0.cmp(&a.0));
+            self.visible = chunks.into_iter().flat_map(|(_, c)| c).collect();
             self.visible = self.prune_empty_headers();
         }
 
-        // Preserve selection: try to keep the same item selected, else find closest host
+        // When filter is active, selection always snaps to the top match (the highest-
+        // scoring host). When filter is empty, preserve selection by all_items index.
         if self.visible.is_empty() {
             self.selected = 0;
-        } else if let Some(prev) = prev_idx {
-            if let Some(pos) = self.visible.iter().position(|&idx| idx == prev) {
-                self.selected = pos;
-            } else {
-                self.selected = self.find_closest_host(prev);
+        } else if self.filter.is_empty() {
+            if let Some(prev) = prev_idx {
+                if let Some(pos) = self.visible.iter().position(|&idx| idx == prev) {
+                    self.selected = pos;
+                } else {
+                    self.selected = self.find_closest_host(prev);
+                }
             }
+        } else {
+            self.selected = self
+                .visible
+                .iter()
+                .position(|&idx| matches!(self.all_items[idx].kind, FlatItemKind::Host))
+                .unwrap_or(0);
         }
 
         self.sync_list_state();
@@ -1041,6 +1091,115 @@ mod tests {
     fn test_fuzzy_match_empty_pattern() {
         assert!(fuzzy_match("anything", "", false));
         assert!(fuzzy_match("anything", "", true));
+    }
+
+    #[test]
+    fn test_filter_ranks_better_match_first() {
+        // Two hosts in the same section: one matches `prod` consecutively, the other scattered.
+        // The consecutive match should sort first.
+        let root = ConfigNode {
+            path: std::path::PathBuf::from("config"),
+            hosts: vec![],
+            children: vec![],
+        };
+        let mut app = App::new(root, vec![], vec![]);
+        app.all_items = vec![
+            FlatItem {
+                kind: FlatItemKind::File,
+                label: "config".into(),
+                depth: 0,
+                connect_host: None,
+                full_cmd: None,
+                info: None,
+            },
+            FlatItem {
+                kind: FlatItemKind::Host,
+                label: "mongo-prod-replica".into(),
+                depth: 1,
+                connect_host: Some("mongo-prod-replica".into()),
+                full_cmd: None,
+                info: None,
+            },
+            FlatItem {
+                kind: FlatItemKind::Host,
+                label: "prod-db".into(),
+                depth: 1,
+                connect_host: Some("prod-db".into()),
+                full_cmd: None,
+                info: None,
+            },
+        ];
+        app.visible = (0..app.all_items.len()).collect();
+
+        app.filter = "prod".into();
+        app.update_filter();
+
+        // Visible: header + 2 hosts. The prefix match `prod-db` should come first.
+        assert_eq!(app.visible.len(), 3);
+        let host_names: Vec<&str> = app
+            .visible
+            .iter()
+            .filter_map(|&i| match app.all_items[i].kind {
+                FlatItemKind::Host => Some(app.all_items[i].label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(host_names, vec!["prod-db", "mongo-prod-replica"]);
+    }
+
+    #[test]
+    fn test_filter_floats_top_section_with_best_match() {
+        // Two top-level sections: "Recent" with a weak "ue" match, "config" with strong "ueransim" match.
+        // Section containing the strongest match should come first.
+        let root = ConfigNode {
+            path: std::path::PathBuf::from("config"),
+            hosts: vec![],
+            children: vec![],
+        };
+        let mut app = App::new(root, vec![], vec![]);
+        app.all_items = vec![
+            FlatItem {
+                kind: FlatItemKind::File,
+                label: "Recent".into(),
+                depth: 0,
+                connect_host: None,
+                full_cmd: None,
+                info: None,
+            },
+            FlatItem {
+                kind: FlatItemKind::Host,
+                label: "queue-worker".into(),
+                depth: 1,
+                connect_host: Some("queue-worker".into()),
+                full_cmd: None,
+                info: None,
+            },
+            FlatItem {
+                kind: FlatItemKind::File,
+                label: "config".into(),
+                depth: 0,
+                connect_host: None,
+                full_cmd: None,
+                info: None,
+            },
+            FlatItem {
+                kind: FlatItemKind::Host,
+                label: "ueransim".into(),
+                depth: 1,
+                connect_host: Some("ueransim".into()),
+                full_cmd: None,
+                info: None,
+            },
+        ];
+        app.visible = (0..app.all_items.len()).collect();
+
+        app.filter = "ue".into();
+        app.update_filter();
+
+        // First visible item should be the "config" header, then "ueransim".
+        assert!(app.visible.len() >= 2);
+        assert_eq!(app.all_items[app.visible[0]].label, "config");
+        assert_eq!(app.all_items[app.visible[1]].label, "ueransim");
     }
 
     #[test]
