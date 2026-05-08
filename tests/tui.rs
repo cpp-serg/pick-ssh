@@ -491,6 +491,771 @@ fn known_host_dedupes_against_config_alias() {
 }
 
 #[test]
+fn add_host_form_saves_to_existing_file() {
+    // Open form with Ctrl+N, type alias and hostname, confirm. The new alias should
+    // be appended to ~/.ssh/config.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host already-here\n  HostName 10.0.0.99\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    tui.send("\x0e"); // Ctrl+N
+    tui.settle();
+
+    // Field 0: Alias
+    tui.send("newhost");
+    // Tab to HostName
+    tui.send("\t");
+    tui.send("10.0.0.42");
+    // Submit
+    tui.send("\r"); // Enter
+    tui.settle();
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    assert!(
+        cfg.contains("Host newhost"),
+        "config should contain new alias. content:\n{cfg}"
+    );
+    assert!(
+        cfg.contains("HostName 10.0.0.42"),
+        "config should contain new hostname. content:\n{cfg}"
+    );
+    // Old entry preserved.
+    assert!(cfg.contains("Host already-here"));
+
+    // Exactly one blank line between the previous entry and the new one (no
+    // multiple blanks, no missing separator).
+    assert!(
+        cfg.contains("HostName 10.0.0.99\n\nHost newhost"),
+        "expected exactly one blank line before new block:\n{cfg:?}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn add_host_form_rejects_empty_alias() {
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host placeholder\n  HostName 10.0.0.1\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    tui.send("\x0e"); // Ctrl+N
+    tui.settle();
+    // Don't type anything, just press Enter
+    tui.send("\r");
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Alias is required"),
+        "expected validation error, got:\n{screen}"
+    );
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    assert!(
+        !cfg.contains("Host \n"),
+        "no empty Host should have been written"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn add_host_form_rejects_duplicate_alias() {
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host existing\n  HostName 10.0.0.1\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    tui.send("\x0e"); // Ctrl+N
+    tui.settle();
+    tui.send("existing");
+    tui.send("\r");
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("already exists"),
+        "expected duplicate-alias error, got:\n{screen}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn ctrl_t_inside_add_host_form_shows_test_on_top() {
+    // Open the add-host form, type a hostname, press Ctrl+T. The SSH test popup
+    // (titled "Testing …") should appear above the form. Pressing Esc should
+    // dismiss the test and leave the form still active.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host placeholder\n  HostName 10.0.0.1\n")
+        // Make ssh resolve quickly to a closed port (no DNS lookup). We just
+        // need the test popup to appear; the actual outcome is irrelevant.
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    tui.send("\x0e"); // Ctrl+N opens the form
+    tui.settle();
+    tui.send("probehost");
+    // Tab to HostName
+    tui.send("\t");
+    tui.send("127.0.0.1");
+    tui.send("\x14"); // Ctrl+T
+    tui.settle();
+
+    let with_test = tui.screen().join("\n");
+    assert!(
+        with_test.contains("Testing 127.0.0.1") || with_test.contains("- Failed") || with_test.contains("- Success"),
+        "test popup should appear with title.\n{with_test}"
+    );
+
+    // Dismiss the test popup with Esc.
+    tui.send("\x1b");
+    tui.settle();
+
+    let after_dismiss = tui.screen().join("\n");
+    assert!(
+        after_dismiss.contains("Add new SSH host") || after_dismiss.contains("Alias"),
+        "form should still be visible after closing the test popup.\n{after_dismiss}"
+    );
+    // Test popup gone.
+    assert!(
+        !after_dismiss.contains("Testing 127.0.0.1"),
+        "test popup should have been dismissed.\n{after_dismiss}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn ctrl_d_duplicates_selected_host_with_inserted_block() {
+    // Two hosts in the file. Selecting the first and pressing Ctrl+D opens the form
+    // pre-filled with `alpha-copy` + alpha's fields. Saving should insert the new
+    // block immediately after alpha (between alpha and beta), not at the end.
+    let cfg_initial = "\
+Host alpha
+  HostName 10.0.0.1
+  User admin
+  Port 2222
+
+Host beta
+  HostName 10.0.0.2
+";
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", cfg_initial)
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    // Cursor lands on alpha (first host).
+    tui.send("\x04"); // Ctrl+D
+    tui.settle();
+
+    // Form is pre-filled. The screen should show "alpha-copy" as the alias and
+    // alpha's fields populated.
+    let screen_before = tui.screen().join("\n");
+    assert!(
+        screen_before.contains("alpha-copy"),
+        "alias should default to 'alpha-copy'.\n{screen_before}"
+    );
+    assert!(
+        screen_before.contains("10.0.0.1"),
+        "HostName should be pre-filled.\n{screen_before}"
+    );
+    assert!(
+        screen_before.contains("admin"),
+        "User should be pre-filled.\n{screen_before}"
+    );
+    assert!(
+        screen_before.contains("2222"),
+        "Port should be pre-filled.\n{screen_before}"
+    );
+
+    // Save with default suggested alias (no conflict since '-copy' suffix is unique).
+    tui.send("\r");
+    tui.settle();
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    let alpha_pos = cfg.find("Host alpha\n").expect("alpha block present");
+    let copy_pos = cfg.find("Host alpha-copy").expect("copy block present");
+    let beta_pos = cfg.find("Host beta\n").expect("beta block present");
+    assert!(
+        alpha_pos < copy_pos && copy_pos < beta_pos,
+        "alpha-copy must sit between alpha and beta.\nfile contents:\n{cfg}"
+    );
+    // The duplicate must carry over the user/port.
+    let after_copy = &cfg[copy_pos..];
+    let next_host = after_copy
+        .find("Host beta")
+        .expect("beta should follow alpha-copy");
+    let copy_block = &after_copy[..next_host];
+    assert!(
+        copy_block.contains("HostName 10.0.0.1"),
+        "copy block missing HostName:\n{copy_block}"
+    );
+    assert!(
+        copy_block.contains("User admin"),
+        "copy block missing User:\n{copy_block}"
+    );
+    assert!(
+        copy_block.contains("Port 2222"),
+        "copy block missing Port:\n{copy_block}"
+    );
+
+    // The duplicate must be sandwiched by exactly one blank line on each side.
+    assert!(
+        cfg.contains("\n\nHost alpha-copy"),
+        "expected blank line before duplicate:\n{cfg:?}"
+    );
+    // The block ends with the last field's newline; right after, a blank line
+    // and then the next block.
+    assert!(
+        cfg.contains("Port 2222\n\nHost beta") || cfg.contains("Port 2222\n  \n\nHost beta"),
+        "expected blank line after duplicate before next block. file:\n{cfg:?}"
+    );
+
+    tui.quit();
+}
+
+/// Returns the line of `content` that comes immediately after `marker_line`,
+/// where `marker_line` is the LAST line of the inserted block (assumed to be a
+/// "  Field value" config line or empty). Skips trailing blank lines that the
+/// writer added between the new block and the next thing.
+fn line_after_block(content: &str, last_block_line: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let pos = lines.iter().position(|l| *l == last_block_line)?;
+    // Skip blank lines after the block.
+    let mut i = pos + 1;
+    while i < lines.len() && lines[i].trim().is_empty() {
+        i += 1;
+    }
+    Some(lines.get(i).unwrap_or(&"").to_string())
+}
+
+/// Word-boundary directive check: matches `Host` but NOT `HostName`,
+/// `Match` but NOT `MatchUser`, etc.
+fn is_directive(line: &str, name: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.len() < name.len() {
+        return false;
+    }
+    let (head, rest) = trimmed.split_at(name.len());
+    if !head.eq_ignore_ascii_case(name) {
+        return false;
+    }
+    matches!(rest.chars().next(), None | Some(' ' | '\t' | '='))
+}
+
+fn is_host_or_eof(line: &str) -> bool {
+    line.is_empty()
+        || is_directive(line, "Host")
+        || is_directive(line, "Match")
+        || is_directive(line, "Include")
+}
+
+#[test]
+fn add_host_insertion_lands_before_host_line_or_eof_for_ctrl_n() {
+    // Ctrl+N appends at EOF — the line after the inserted block must be empty.
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            "Host alpha\n  HostName 1.1.1.1\n\nHost beta\n  HostName 2.2.2.2\n",
+        )
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+    tui.send("\x0e"); // Ctrl+N
+    tui.settle();
+    tui.send("appended");
+    tui.send("\t"); // → HostName
+    tui.send("9.9.9.9");
+    tui.send("\r");
+    tui.settle();
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    let after = line_after_block(&cfg, "  HostName 9.9.9.9").expect("inserted line found");
+    assert!(
+        is_host_or_eof(&after),
+        "after the new block expected EOF or a Host line, got: {after:?}\nfull file:\n{cfg}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn add_host_insertion_lands_before_host_line_or_eof_for_ctrl_d_middle() {
+    // Ctrl+D on a host in the middle of the file: the new block must land right
+    // before the NEXT Host directive (after blank-line separator).
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            "Host alpha\n  HostName 1.1.1.1\n\nHost beta\n  HostName 2.2.2.2\n\nHost gamma\n  HostName 3.3.3.3\n",
+        )
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+    // Cursor lands on first host (alpha).
+    tui.send("\x04"); // Ctrl+D — duplicates alpha
+    tui.settle();
+    tui.send("\r"); // accept default alias `alpha-copy`
+    tui.settle();
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    // The duplicate's last property is "  HostName 1.1.1.1" (same as alpha).
+    // There are now TWO of them in the file; the second occurrence is the copy.
+    let mut parts = cfg.match_indices("  HostName 1.1.1.1");
+    let _first = parts.next().expect("alpha's HostName");
+    let (second_pos, _) = parts.next().expect("alpha-copy's HostName");
+    let mut iter = cfg[second_pos..].lines().skip(1);
+    let after = loop {
+        match iter.next() {
+            Some(l) if l.trim().is_empty() => continue,
+            Some(l) => break l.to_string(),
+            None => break String::new(),
+        }
+    };
+    assert!(
+        is_host_or_eof(&after),
+        "after duplicate expected Host line, got: {after:?}\nfull file:\n{cfg}"
+    );
+    assert!(
+        after.starts_with("Host beta"),
+        "duplicate of alpha must land right before beta, got: {after:?}\nfull file:\n{cfg}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn ctrl_p_edits_properties_in_place() {
+    // Open Properties (Ctrl+P) on a config entry, change one field, save.
+    // The block should be replaced in-place: alias kept, HostName updated, no duplicate.
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            "Host alpha\n  HostName 10.0.0.1\n  User old\n\nHost beta\n  HostName 10.0.0.2\n",
+        )
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    // Cursor on alpha. Open properties.
+    tui.send("\x10"); // Ctrl+P
+    tui.settle();
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Edit SSH host"),
+        "form title should say Edit. screen:\n{screen}"
+    );
+    assert!(
+        screen.contains("alpha") && screen.contains("10.0.0.1") && screen.contains("old"),
+        "fields should be pre-filled. screen:\n{screen}"
+    );
+
+    // Tab x2 from Alias → HostName → User, clear field, type new value.
+    tui.send("\t\t");
+    tui.send("\x15"); // Ctrl+U: clear field
+    tui.send("newuser");
+    tui.send("\r");
+    tui.settle();
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    // alpha block should still exist exactly once, with the updated user.
+    assert_eq!(cfg.matches("Host alpha\n").count(), 1, "single alpha block. file:\n{cfg}");
+    assert!(
+        cfg.contains("Host alpha\n  HostName 10.0.0.1\n  User newuser\n"),
+        "alpha block should have updated user. file:\n{cfg}"
+    );
+    // beta block must remain intact.
+    assert!(
+        cfg.contains("Host beta\n  HostName 10.0.0.2\n"),
+        "beta block must remain. file:\n{cfg}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn ctrl_p_keeping_same_alias_does_not_trigger_conflict() {
+    // Editing an entry while keeping the alias the same must NOT report a duplicate
+    // alias error (the entry being edited is excluded from the conflict check).
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            "Host alpha\n  HostName 10.0.0.1\n",
+        )
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    tui.send("\x10"); // Ctrl+P
+    tui.settle();
+    // Press Enter without changing anything. Should save successfully.
+    tui.send("\r");
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        !screen.contains("already exists"),
+        "should not warn about self-conflict. screen:\n{screen}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn ctrl_m_moves_entry_between_files() {
+    // Move alpha from ~/.ssh/config to an Include'd file. After save:
+    // alpha should be GONE from ~/.ssh/config and PRESENT in the target file.
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            "Include ~/.ssh/extra\n\nHost alpha\n  HostName 10.0.0.1\n\nHost beta\n  HostName 10.0.0.2\n",
+        )
+        .file(".ssh/extra", "")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    // Filter to alpha so we know we're selecting it.
+    tui.send("alpha");
+    tui.settle();
+    tui.send("\x1bm"); // Alt+M (ESC + m)
+    tui.settle();
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Move SSH host to file"),
+        "title should say Move. screen:\n{screen}"
+    );
+
+    // The File field is focused; clear it and type the target path.
+    tui.send("\x15"); // Ctrl+U
+    tui.send("~/.ssh/extra");
+    tui.send("\r");
+    tui.settle();
+
+    let main = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    let extra = fs::read_to_string(home.join(".ssh/extra")).unwrap();
+    assert!(
+        !main.contains("Host alpha"),
+        "alpha should be removed from main config. file:\n{main}"
+    );
+    assert!(
+        main.contains("Host beta"),
+        "beta should remain in main config. file:\n{main}"
+    );
+    assert!(
+        extra.contains("Host alpha\n  HostName 10.0.0.1"),
+        "alpha should be in the extra file. file:\n{extra}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn ctrl_m_on_known_host_shows_status_message() {
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "")
+        .file(".ssh/known_hosts", "10.0.0.99 ssh-rsa AAAA\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    tui.send("\x1bm"); // Alt+M (ESC + m)
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Move only available"),
+        "expected refusal status. screen:\n{screen}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn alt_b_toggles_pin_on_selected_host() {
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host alpha\n  HostName 10.0.0.1\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let screen0 = tui.screen().join("\n");
+    assert!(
+        !screen0.contains("Pinned"),
+        "no Pinned section initially. screen:\n{screen0}"
+    );
+
+    // Alt+B (ESC + b) to pin alpha. Alt is used (not Ctrl) so the binding
+    // doesn't collide with the tmux prefix Ctrl+B.
+    tui.send("\x1bb");
+    tui.settle();
+    let screen1 = tui.screen().join("\n");
+    assert!(
+        screen1.contains("Pinned"),
+        "Pinned section should appear after Alt+B. screen:\n{screen1}"
+    );
+
+    // Alt+B again to unpin.
+    tui.send("\x1bb");
+    tui.settle();
+    let screen2 = tui.screen().join("\n");
+    assert!(
+        !screen2.contains("Pinned"),
+        "Pinned section should disappear after second Alt+B. screen:\n{screen2}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn alt_t_cycles_theme_forward() {
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host alpha\n  HostName 10.0.0.1\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    // Default theme is gruvbox-dark per the harness env. After Alt+T, the title
+    // changes to show the new theme name (next in the THEMES list).
+    tui.send("\x1bt"); // Alt+T (ESC + t)
+    tui.settle();
+    let lines = tui.screen();
+    let screen = lines.join("\n");
+    // The filter title now shows the theme name. We don't assert a specific
+    // name (theme order can change) — just that it's NOT "Filter" anymore.
+    let filter_row = lines
+        .iter()
+        .find(|line| line.contains('┌'))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !filter_row.contains("Filter"),
+        "after Alt+T the filter title should show a theme name, not 'Filter'. row:\n{filter_row}\nscreen:\n{screen}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn ctrl_p_on_known_host_shows_status_message() {
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "")
+        .file(".ssh/known_hosts", "10.0.0.99 ssh-rsa AAAA\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    tui.send("\x10"); // Ctrl+P
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Properties only available"),
+        "expected refusal status message. screen:\n{screen}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn ctrl_d_to_different_file_does_not_split_existing_block() {
+    // Reproduces the user's scenario: duplicate homelab (in ~/.ssh/config),
+    // change File to ~/.ssh/extra (an Include'd file). The source's end_line was
+    // computed against ~/.ssh/config and points mid-block in the extra file. The
+    // writer must advance the insertion point past extra's properties so the new
+    // block lands BEFORE a Host directive (or at EOF), never splitting extraB1.
+    let main_cfg = "\
+Include ~/.ssh/extra
+
+Host homelab
+  HostName 192.168.88.200
+  User root
+";
+    // Important: the FIRST Host directive in the extra file lives at the same
+    // line number where homelab's end is in the main config (line 5). That
+    // way the buggy behavior (using insert_after_line as-is) would drop the new
+    // block right after `Host extraB1` and before `HostName 10.9.1.11`.
+    let extra_cfg = "\
+# extra lab
+# managed cluster
+
+Host extraB1
+    HostName 10.9.1.11
+
+Host extraB2
+    HostName 10.9.1.43
+";
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", main_cfg)
+        .file(".ssh/extra", extra_cfg)
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    // Filter to find homelab (it's in main config).
+    tui.send("homelab");
+    tui.settle();
+    // Ctrl+D opens the duplicate form pre-filled with homelab's fields.
+    tui.send("\x04");
+    tui.settle();
+    // Tab to the File field (6 tabs from Alias).
+    for _ in 0..6 {
+        tui.send("\t");
+    }
+    // Clear the file path and type the extra path.
+    tui.send("\x15"); // Ctrl+U
+    tui.send("~/.ssh/extra");
+    tui.settle();
+    tui.send("\r");
+    tui.settle();
+
+    let extra_after = fs::read_to_string(home.join(".ssh/extra")).unwrap();
+
+    // extraB1's block must remain intact — `HostName 10.9.1.11` directly follows
+    // `Host extraB1` with no foreign content between them.
+    assert!(
+        extra_after.contains("Host extraB1\n    HostName 10.9.1.11"),
+        "extraB1 block was split. file:\n{extra_after}"
+    );
+    // The new block sits between extraB1 and extraB2, with blank-line separators.
+    assert!(
+        extra_after.contains("HostName 10.9.1.11\n\nHost homelab-copy"),
+        "new block should land right after extraB1's full block. file:\n{extra_after}"
+    );
+    assert!(
+        extra_after.contains("User root\n\nHost extraB2"),
+        "next existing block (extraB2) should follow with one blank line. file:\n{extra_after}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn add_host_insertion_lands_at_eof_for_ctrl_d_on_last_host() {
+    // Ctrl+D on the LAST host in the file: insertion lands at EOF.
+    let mut tui = HarnessBuilder::new()
+        .file(
+            ".ssh/config",
+            "Host alpha\n  HostName 1.1.1.1\n\nHost beta\n  HostName 2.2.2.2\n",
+        )
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+    // Move down to second host (beta).
+    tui.send("\x1b[B");
+    tui.settle();
+    tui.send("\x04"); // Ctrl+D
+    tui.settle();
+    tui.send("\r"); // accept default alias `beta-copy`
+    tui.settle();
+
+    let cfg = fs::read_to_string(home.join(".ssh/config")).unwrap();
+    // The duplicate of beta is at the end of the file. Find the LAST occurrence
+    // of "  HostName 2.2.2.2" — that's the duplicate's last property line.
+    let last_pos = cfg.rfind("  HostName 2.2.2.2").unwrap();
+    let mut iter = cfg[last_pos..].lines().skip(1);
+    let after_last = loop {
+        match iter.next() {
+            Some(l) if l.trim().is_empty() => continue,
+            Some(l) => break l.to_string(),
+            None => break String::new(),
+        }
+    };
+    assert!(
+        is_host_or_eof(&after_last),
+        "after duplicate of last host expected EOF or Host, got: {after_last:?}\nfull file:\n{cfg}"
+    );
+    assert!(
+        after_last.is_empty(),
+        "after duplicate of last host expected EOF, got: {after_last:?}\nfull file:\n{cfg}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn ctrl_d_on_known_host_opens_form_with_prefilled_hostname() {
+    // For non-config items (Known/Recent/History/Pinned), Ctrl+D opens the same
+    // add-host form with whatever data we can derive (e.g. HostName from the
+    // known_hosts entry), defaulting File to ~/.ssh/config in append mode.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host placeholder\n  HostName 10.0.0.1\n")
+        .file(".ssh/known_hosts", "10.0.0.99 ssh-rsa AAAA\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    // Filter to land on the known_hosts entry.
+    tui.send("10.0.0.99");
+    tui.settle();
+    tui.send("\x04"); // Ctrl+D
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Add new SSH host") || screen.contains("Alias"),
+        "form should be open.\n{screen}"
+    );
+    assert!(
+        screen.contains("10.0.0.99"),
+        "HostName should be pre-filled from the known_hosts entry.\n{screen}"
+    );
+    assert!(
+        screen.contains(".ssh/config"),
+        "File should default to ~/.ssh/config.\n{screen}"
+    );
+
+    tui.quit();
+}
+
+#[test]
+fn add_host_form_creates_new_file_after_confirmation() {
+    // File field points at a non-existent path. Enter triggers confirm; pressing y
+    // creates the file (with parent dirs) and writes the entry.
+    let mut tui = HarnessBuilder::new()
+        .file(".ssh/config", "Host placeholder\n  HostName 10.0.0.1\n")
+        .env("EDITOR", "/bin/false")
+        .spawn();
+
+    let home = tui.home_path().to_owned();
+
+    tui.send("\x0e"); // Ctrl+N
+    tui.settle();
+    tui.send("brandnew");
+    // Tab x6 to reach File field
+    for _ in 0..6 {
+        tui.send("\t");
+    }
+    // Clear the default and type a new path
+    tui.send("\x15"); // Ctrl+U: clear field
+    tui.send("~/.ssh/extra/work_hosts");
+    tui.send("\r");
+    tui.settle();
+
+    let screen = tui.screen().join("\n");
+    assert!(
+        screen.contains("Create file") && screen.contains("y"),
+        "expected create-file confirmation, got:\n{screen}"
+    );
+
+    // Confirm
+    tui.send("y");
+    tui.settle();
+
+    let target = home.join(".ssh/extra/work_hosts");
+    let cfg = fs::read_to_string(&target)
+        .unwrap_or_else(|e| panic!("file not created at {}: {}", target.display(), e));
+    assert!(
+        cfg.contains("Host brandnew"),
+        "new file should contain the host. content:\n{cfg}"
+    );
+
+    tui.quit();
+}
+
+#[test]
 fn ueransim_in_subsection_floats_to_top_when_filtering_ue() {
     // Reproduces the user's case: `work` Include sits inside the main config; it has
     // a `ueransim` host. zsh history has an unrelated openvpn entry that also matches

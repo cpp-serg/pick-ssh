@@ -50,6 +50,12 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // Add-host form
+            if app.show_add_host {
+                handle_add_host_keys(app, key);
+                return Ok(());
+            }
+
             // SFTP path completion popup
             if app.show_sftp {
                 match key.code {
@@ -108,10 +114,10 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
-            // Dismiss "clear all pins?" on any key except the confirming Ctrl+Shift+P
+            // Dismiss "clear all pins?" on any key except the confirming Alt+Shift+B
             if app.confirm_clear_pins {
-                let is_confirm = key.code == KeyCode::Char('p')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                let is_confirm = key.code == KeyCode::Char('b')
+                    && key.modifiers.contains(KeyModifiers::ALT)
                     && key.modifiers.contains(KeyModifiers::SHIFT);
                 if !is_confirm {
                     app.confirm_clear_pins = false;
@@ -134,16 +140,20 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.toggle_exact();
                 }
-                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.theme_index = (app.theme_index + 1) % THEMES.len();
-                    app.theme_changed = true;
-                    pinned::save_theme(theme_name_by_index(app.theme_index));
-                }
-                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::ALT) => {
+                // Themes: Alt+T = next, Alt+Shift+T = previous.
+                KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::ALT)
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
                     app.theme_index = (app.theme_index + THEMES.len() - 1) % THEMES.len();
                     app.theme_changed = true;
                     pinned::save_theme(theme_name_by_index(app.theme_index));
                 }
+                KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.theme_index = (app.theme_index + 1) % THEMES.len();
+                    app.theme_changed = true;
+                    pinned::save_theme(theme_name_by_index(app.theme_index));
+                }
+                // Pin reorder kept on Alt+J/K.
                 KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.move_pin_up();
                 }
@@ -151,22 +161,41 @@ pub fn handle_events(app: &mut App) -> Result<()> {
                     app.move_pin_down();
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        if app.confirm_clear_pins {
-                            app.clear_pins();
-                        } else if !app.pinned.is_empty() {
-                            app.confirm_clear_pins = true;
-                        }
-                    } else {
-                        app.confirm_clear_pins = false;
-                        app.toggle_pin();
+                    app.start_edit_props();
+                }
+                // Alt+Shift+B confirms / triggers clear-all-pins.
+                // (Alt-mod, not Ctrl-mod, so it doesn't collide with the tmux
+                // prefix Ctrl+B.)
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT)
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
+                    if app.confirm_clear_pins {
+                        app.clear_pins();
+                    } else if !app.pinned.is_empty() {
+                        app.confirm_clear_pins = true;
                     }
+                }
+                // Alt+B toggles pin (Bookmark).
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.confirm_clear_pins = false;
+                    app.toggle_pin();
+                }
+                // Alt+M (Ctrl+M is ASCII CR / indistinguishable from Enter in
+                // legacy terminal mode).
+                KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.start_move_host();
                 }
                 KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.start_ssh_test();
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.start_edit();
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.start_add_host();
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.start_duplicate_host();
                 }
                 KeyCode::Null
                 | KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -260,4 +289,50 @@ pub fn handle_events(app: &mut App) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_add_host_keys(app: &mut App, key: crossterm::event::KeyEvent) {
+    // Confirmation prompt for creating a new file: y/n only.
+    if app.add_form.confirm_create_file.is_some() {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => match app.add_host_confirm_create() {
+                Ok(()) => app.finish_add_host(),
+                Err(msg) => app.add_form.error = Some(msg),
+            },
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.add_host_cancel_create();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => app.add_host_close(),
+        KeyCode::Tab => app.add_host_cycle_field(true),
+        KeyCode::BackTab => app.add_host_cycle_field(false),
+        KeyCode::Up => app.add_host_nav_up(),
+        KeyCode::Down => app.add_host_nav_down(),
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.add_host_test_connection();
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.add_host_clear_field();
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.add_host_close();
+        }
+        KeyCode::Enter => match app.add_host_try_save() {
+            Ok(true) => app.finish_add_host(),
+            Ok(false) => {
+                // Confirmation prompt is now active; UI will render it.
+            }
+            Err(_) => {
+                // Validation error stays in app.add_form.error; UI shows it.
+            }
+        },
+        KeyCode::Backspace => app.add_host_backspace(),
+        KeyCode::Char(c) => app.add_host_input(c),
+        _ => {}
+    }
 }

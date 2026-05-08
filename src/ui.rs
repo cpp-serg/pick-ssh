@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::{App, SftpStatus};
+use crate::app::{AddHostField, App, SftpStatus};
 use crate::theme::{Theme, theme_name_by_index};
 use crate::tree::FlatItemKind;
 
@@ -20,7 +20,7 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
         status_owned = msg.clone();
         status_owned.as_str()
     } else if app.confirm_clear_pins {
-        "Clear all pins? Press Ctrl+Shift+P to confirm"
+        "Clear all pins? Press Alt+Shift+B to confirm"
     } else if app.theme_changed {
         theme_name_by_index(app.theme_index)
     } else {
@@ -230,11 +230,20 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
                         .fg(theme.accent_filter)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw("Pin/unpin entry"),
+                Span::raw("Edit properties"),
             ]),
             Line::from(vec![
                 Span::styled(
-                    "Ctrl+P   ",
+                    "Alt+b    ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Bookmark (pin/unpin)"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Alt+Shift+B ",
                     Style::default()
                         .fg(theme.accent_filter)
                         .add_modifier(Modifier::BOLD),
@@ -270,6 +279,33 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             ]),
             Line::from(vec![
                 Span::styled(
+                    "Ctrl+n   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Add new SSH host"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Ctrl+d   ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Duplicate selected entry"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Alt+m    ",
+                    Style::default()
+                        .fg(theme.accent_filter)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Move entry to another file"),
+            ]),
+            Line::from(vec![
+                Span::styled(
                     "Ctrl+Spc ",
                     Style::default()
                         .fg(theme.accent_filter)
@@ -279,12 +315,12 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             ]),
             Line::from(vec![
                 Span::styled(
-                    "Alt+r/e  ",
+                    "Alt+T    ",
                     Style::default()
                         .fg(theme.accent_filter)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw("Next/prev theme"),
+                Span::raw("Next theme  (Alt+Shift+T = prev)"),
             ]),
             Line::from(vec![
                 Span::styled(
@@ -327,105 +363,7 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
         f.render_widget(help, popup_area);
     }
 
-    // SSH test result popup
-    if app.show_ssh_test {
-        let area = f.area();
-        let popup_width = area.width * 9 / 10;
-        let popup_height = area.height * 9 / 10;
-        let popup_area = Rect {
-            x: area.width.saturating_sub(popup_width) / 2,
-            y: area.height.saturating_sub(popup_height) / 2,
-            width: popup_width,
-            height: popup_height,
-        };
-
-        // Build lines: verbose output + status line at the end
-        let mut lines: Vec<Line> = app
-            .ssh_test_output
-            .iter()
-            .map(|s| Line::from(Span::styled(s.as_str(), Style::default().fg(theme.fg))))
-            .collect();
-
-        if let Some(success) = app.ssh_test_result {
-            lines.push(Line::raw(""));
-            let ts = app.ssh_test_done_ts.as_deref().unwrap_or("--:---");
-            let (text, color) = if success {
-                (
-                    format!("{ts}  {}: CONNECTION SUCCESSFUL", app.ssh_test_host),
-                    theme.accent_filter,
-                )
-            } else {
-                (
-                    format!("{ts}  {}: CONNECTION FAILED", app.ssh_test_host),
-                    theme.accent_header,
-                )
-            };
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )));
-        }
-
-        // Count wrapped lines using word-wrap logic matching ratatui Wrap { trim: false }
-        let inner_width = popup_width.saturating_sub(2) as usize;
-        let inner_height = popup_height.saturating_sub(2);
-        let total_lines: u16 = lines
-            .iter()
-            .map(|l| {
-                let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                if text.is_empty() || inner_width == 0 {
-                    return 1u16;
-                }
-                let mut rows: u16 = 1;
-                let mut col: usize = 0;
-                for word in text.split(' ') {
-                    let wlen = word.len();
-                    if col == 0 {
-                        col = wlen;
-                    } else if col + 1 + wlen > inner_width {
-                        rows += 1;
-                        col = wlen;
-                    } else {
-                        col += 1 + wlen;
-                    }
-                    // Handle words wider than the line
-                    while col > inner_width {
-                        rows += 1;
-                        col = col.saturating_sub(inner_width);
-                    }
-                }
-                rows
-            })
-            .sum();
-        let max_scroll = total_lines.saturating_sub(inner_height);
-        if app.ssh_test_scroll > max_scroll {
-            app.ssh_test_scroll = max_scroll;
-        }
-
-        let title = match app.ssh_test_result {
-            None => format!("Testing {}", app.ssh_test_host),
-            Some(true) => format!("{} - Success", app.ssh_test_host),
-            Some(false) => format!("{} - Failed", app.ssh_test_host),
-        };
-        let border_color = match app.ssh_test_result {
-            Some(true) => theme.accent_filter,
-            _ => theme.accent_header,
-        };
-
-        f.render_widget(Clear, popup_area);
-        let paragraph = Paragraph::new(lines)
-            .style(Style::default().fg(theme.fg).bg(theme.bg))
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(border_color))
-                    .style(Style::default().bg(theme.bg)),
-            )
-            .scroll((app.ssh_test_scroll, 0));
-        f.render_widget(paragraph, popup_area);
-    }
+    // SSH test popup is drawn last (below) so it sits on top of any other popup.
 
     // SFTP path completion popup
     if app.show_sftp {
@@ -541,4 +479,266 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
             f.render_stateful_widget(list, chunks[1], &mut app.sftp_list_state);
         }
     }
+
+    // Add-host form
+    if app.show_add_host {
+        draw_add_host(f, app, theme);
+    }
+
+    // SSH test popup — drawn last so it floats above all other popups (e.g. the
+    // add-host form, when the user presses Ctrl+T from inside it).
+    if app.show_ssh_test {
+        draw_ssh_test(f, app, theme);
+    }
+}
+
+fn draw_ssh_test(f: &mut Frame, app: &mut App, theme: &Theme) {
+    let area = f.area();
+    let popup_width = area.width * 9 / 10;
+    let popup_height = area.height * 9 / 10;
+    let popup_area = Rect {
+        x: area.width.saturating_sub(popup_width) / 2,
+        y: area.height.saturating_sub(popup_height) / 2,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    // Build lines: verbose output + status line at the end
+    let mut lines: Vec<Line> = app
+        .ssh_test_output
+        .iter()
+        .map(|s| Line::from(Span::styled(s.as_str(), Style::default().fg(theme.fg))))
+        .collect();
+
+    if let Some(success) = app.ssh_test_result {
+        lines.push(Line::raw(""));
+        let ts = app.ssh_test_done_ts.as_deref().unwrap_or("--:---");
+        let (text, color) = if success {
+            (
+                format!("{ts}  {}: CONNECTION SUCCESSFUL", app.ssh_test_host),
+                theme.accent_filter,
+            )
+        } else {
+            (
+                format!("{ts}  {}: CONNECTION FAILED", app.ssh_test_host),
+                theme.accent_header,
+            )
+        };
+        lines.push(Line::from(Span::styled(
+            text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    // Count wrapped lines using word-wrap logic matching ratatui Wrap { trim: false }
+    let inner_width = popup_width.saturating_sub(2) as usize;
+    let inner_height = popup_height.saturating_sub(2);
+    let total_lines: u16 = lines
+        .iter()
+        .map(|l| {
+            let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            if text.is_empty() || inner_width == 0 {
+                return 1u16;
+            }
+            let mut rows: u16 = 1;
+            let mut col: usize = 0;
+            for word in text.split(' ') {
+                let wlen = word.len();
+                if col == 0 {
+                    col = wlen;
+                } else if col + 1 + wlen > inner_width {
+                    rows += 1;
+                    col = wlen;
+                } else {
+                    col += 1 + wlen;
+                }
+                while col > inner_width {
+                    rows += 1;
+                    col = col.saturating_sub(inner_width);
+                }
+            }
+            rows
+        })
+        .sum();
+    let max_scroll = total_lines.saturating_sub(inner_height);
+    if app.ssh_test_scroll > max_scroll {
+        app.ssh_test_scroll = max_scroll;
+    }
+
+    let title = match app.ssh_test_result {
+        None => format!("Testing {}", app.ssh_test_host),
+        Some(true) => format!("{} - Success", app.ssh_test_host),
+        Some(false) => format!("{} - Failed", app.ssh_test_host),
+    };
+    let border_color = match app.ssh_test_result {
+        Some(true) => theme.accent_filter,
+        _ => theme.accent_header,
+    };
+
+    f.render_widget(Clear, popup_area);
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().fg(theme.fg).bg(theme.bg))
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(border_color))
+                .style(Style::default().bg(theme.bg)),
+        )
+        .scroll((app.ssh_test_scroll, 0));
+    f.render_widget(paragraph, popup_area);
+}
+
+fn draw_add_host(f: &mut Frame, app: &mut App, theme: &Theme) {
+    let area = f.area();
+    let popup_width = (area.width * 7 / 10).max(60).min(area.width);
+    // 7 fields × 1 row each = 7, + padding/borders + picker list + status row
+    let popup_height = (area.height * 8 / 10).max(20).min(area.height);
+    let popup_area = Rect {
+        x: area.width.saturating_sub(popup_width) / 2,
+        y: area.height.saturating_sub(popup_height) / 2,
+        width: popup_width,
+        height: popup_height,
+    };
+    f.render_widget(Clear, popup_area);
+
+    let title = if app.add_form.confirm_create_file.is_some() {
+        "Create new file?"
+    } else if app.add_form.is_move {
+        "Move SSH host to file"
+    } else if app.add_form.edit_original.is_some() {
+        "Edit SSH host"
+    } else {
+        "Add new SSH host"
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(theme.accent_header))
+        .style(Style::default().bg(theme.bg));
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    // Layout: 7 field rows + picker area + status row
+    let row_h = 1;
+    let n_fields = AddHostField::ALL.len() as u16;
+    let picker_h = if app.add_form.active() == AddHostField::File
+        && !app.add_form.file_filtered.is_empty()
+    {
+        (app.add_form.file_filtered.len() as u16 + 2).min(8)
+    } else {
+        0
+    };
+    let constraints = [
+        Constraint::Length(n_fields * row_h),
+        Constraint::Length(picker_h),
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ];
+    let chunks = Layout::vertical(constraints).split(inner);
+
+    // Render fields.
+    let active = app.add_form.active();
+    let lines: Vec<Line> = AddHostField::ALL
+        .iter()
+        .map(|&fld| {
+            let is_active = fld == active;
+            let label_style = Style::default()
+                .fg(if is_active {
+                    theme.accent_filter
+                } else {
+                    theme.fg_dim
+                })
+                .add_modifier(if is_active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
+            let value = app.add_form.field(fld);
+            let value_style = if is_active {
+                Style::default().fg(theme.fg_bright).bg(theme.bg_hl)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            let marker = if is_active { "▸ " } else { "  " };
+            Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.accent_marker)),
+                Span::styled(format!("{:14}", fld.label()), label_style),
+                Span::styled(format!(" {value} "), value_style),
+            ])
+        })
+        .collect();
+    let fields_widget = Paragraph::new(lines).style(Style::default().bg(theme.bg));
+    f.render_widget(fields_widget, chunks[0]);
+
+    // Cursor on the active field's value.
+    let active_idx = app.add_form.active_field as u16;
+    let active_value = app.add_form.field(active);
+    f.set_cursor_position((
+        chunks[0].x + 2 + 14 + 1 + active_value.chars().count() as u16,
+        chunks[0].y + active_idx,
+    ));
+
+    // File picker list (only when file field active).
+    if picker_h > 0 {
+        let items: Vec<ListItem> = app
+            .add_form
+            .file_filtered
+            .iter()
+            .enumerate()
+            .map(|(vi, &i)| {
+                let path = &app.add_form.available_files[i];
+                let label = display_path(path);
+                let is_selected = vi == app.add_form.file_picker_idx;
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.fg_bright)
+                        .bg(theme.bg_hl)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
+                ListItem::new(Line::from(Span::styled(format!("  {label}"), style)))
+            })
+            .collect();
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title("Existing config files")
+                .border_style(Style::default().fg(theme.bg_hl))
+                .style(Style::default().bg(theme.bg)),
+        );
+        f.render_widget(list, chunks[1]);
+    }
+
+    // Status row: error / hint / confirm prompt.
+    let status_text = if let Some(ref path) = app.add_form.confirm_create_file {
+        format!(
+            "Create file at {}?  [y]es / [n]o",
+            display_path(path)
+        )
+    } else if let Some(ref e) = app.add_form.error {
+        e.clone()
+    } else {
+        "Tab next  Esc cancel  Enter save  Ctrl+T test  Ctrl+U clear field".to_string()
+    };
+    let status_color = if app.add_form.error.is_some() || app.add_form.confirm_create_file.is_some()
+    {
+        theme.accent_header
+    } else {
+        theme.fg_dim
+    };
+    let status = Paragraph::new(status_text)
+        .style(Style::default().fg(status_color).bg(theme.bg));
+    f.render_widget(status, chunks[2]);
+}
+
+fn display_path(p: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rel) = p.strip_prefix(&home)
+    {
+        return format!("~/{}", rel.display());
+    }
+    p.display().to_string()
 }

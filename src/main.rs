@@ -366,6 +366,28 @@ fn main() -> Result<()> {
                     app.snap_to_first_host();
                 }
             }
+
+            // After saving a new host: reload config, select the new alias, and
+            // auto-launch an SSH test against it.
+            if let Some(alias) = app.pending_select_and_test.take() {
+                let theme_index = app.theme_index;
+                let pinned = app.pinned.clone();
+                let root = load_ssh_config()?;
+                let hist = history::load_history();
+                let known = known_hosts::load_known_hosts();
+                app = App::new(root, hist, known, pinned);
+                app.theme_index = theme_index;
+                let pos = app.visible.iter().position(|&idx| {
+                    app.items()[idx].connect_host.as_deref() == Some(alias.as_str())
+                });
+                if let Some(p) = pos {
+                    app.selected = p;
+                    app.list_state.select(Some(p));
+                    app.start_ssh_test();
+                } else {
+                    app.snap_to_first_host();
+                }
+            }
         }
 
         // Restore terminal
