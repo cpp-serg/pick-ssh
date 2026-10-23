@@ -33,7 +33,8 @@ cargo build --release
 `./build.sh` does the same with the build tree in `build/` (`--musl` for a static
 binary, `--clippy`/`--test` for the checks, `--help` for the rest). `./build.sh --cont`
 runs that build inside the `rl8-build` container image (`--cont=IMAGE` for another) via
-`sp-cont-build` from devenv, so the binary runs on Rocky 8 hosts; it lands in `cont_build/`.
+`sp-cont-build` from devenv, so the binary runs on Rocky 8 hosts; it lands in `cont_build/`
+(`cont_build-<image>/` for another image).
 
 ## Usage
 
