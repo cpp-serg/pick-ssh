@@ -107,3 +107,13 @@ src/
 - `scp`/`rsync` detected as command → appends `:` after hostname
 - Shell snippets are minimal: pass `--line "$LBUFFER"` to tool, set result, handle accept-line for ssh-launch cases
 - `print:` prefix in output signals shell to place command on command line without executing (Tab selection)
+
+## Repository
+
+- **Public on GitHub** at `git@github.com:cpp-serg/pick-ssh.git`; work goes straight onto `master`.
+- **Identity:** commits are `spastukhov <sergey.pastukhow@gmail.com>`, set in this clone's own
+  `.git/config`. A fresh clone needs it set again before the first commit.
+- **Nothing from work machines goes in.** Tests, samples, comments and commit messages use neutral
+  placeholders (`labvm`, `JumpHost.pem`, `10.0.0.x`, `~/.ssh/work`) rather than real host names,
+  addresses, key files or customer names. The history was scrubbed once; grep a new fixture before
+  committing it.
